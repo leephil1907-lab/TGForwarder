@@ -1,14 +1,42 @@
 import express from 'express';
 import path from 'path';
+import helmet from 'helmet';
+import rateLimit from 'express-rate-limit';
 import { createServer as createViteServer } from 'vite';
 import { TelegramEngine } from './server/telegramEngine.js';
 import { StorageManager } from './server/storage.js';
+import { getOrCreateAuthToken, createAuthMiddleware } from './server/auth.js';
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const PORT = parseInt(process.env.PORT || '3000', 10);
+  const HOST = process.env.HOST || '0.0.0.0';
 
-  app.use(express.json());
+  // Disable the default CSP directives — they're built for a server-rendered
+  // app and will break the Vite/React bundle's inline scripts & dev HMR.
+  // Everything else in helmet (X-Frame-Options, no-sniff, etc.) still applies.
+  app.use(helmet({ contentSecurityPolicy: false }));
+  app.use(express.json({ limit: '2mb' }));
+
+  const AUTH_TOKEN = getOrCreateAuthToken();
+  const requireAuth = createAuthMiddleware(AUTH_TOKEN);
+
+  // Slow down brute-force attempts against the login endpoints specifically.
+  const authRateLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    limit: 20,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many authentication attempts. Please wait and try again.' }
+  });
+
+  // General ceiling on the rest of the API so a stray script/loop can't hammer it.
+  const apiRateLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    limit: 240,
+    standardHeaders: true,
+    legacyHeaders: false
+  });
 
   const engine = TelegramEngine.getInstance();
   const storage = StorageManager.getInstance();
@@ -20,6 +48,8 @@ async function startServer() {
 
   // ==================== API ROUTES ====================
 
+  // Health check is intentionally public (no token) — useful for uptime
+  // monitors / container orchestrators that can't hold a secret.
   // Health & Worker status check (supports /api/health and /api/health/status)
   const handleHealthCheck = async (req: express.Request, res: express.Response) => {
     await engine.waitForInitialization();
@@ -45,6 +75,10 @@ async function startServer() {
 
   app.get('/api/health', handleHealthCheck);
   app.get('/api/health/status', handleHealthCheck);
+
+  // ---- Everything below this line requires the app access token ----
+  app.use('/api', apiRateLimiter, requireAuth);
+  app.use('/api/auth', authRateLimiter);
 
   // Safe Configuration
   app.get('/api/config', async (req, res) => {
@@ -371,11 +405,55 @@ REMOVE_FORWARD_SIGNATURE="${config.defaultRemoveSignature ? 'true' : 'false'}"
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`[TGForwarder Pro] Server running on http://0.0.0.0:${PORT}`);
+  const server = app.listen(PORT, HOST, () => {
+    console.log(`[TGForwarder Pro] Server running on http://${HOST}:${PORT}`);
+    if (!process.env.APP_AUTH_TOKEN) {
+      console.log('[TGForwarder Pro] ─────────────────────────────────────────────');
+      console.log('[TGForwarder Pro] No APP_AUTH_TOKEN set — generated one for you.');
+      console.log(`[TGForwarder Pro] Access token: ${AUTH_TOKEN}`);
+      console.log('[TGForwarder Pro] It is saved in .data/auth_token.txt and reused');
+      console.log('[TGForwarder Pro] on restart. Set APP_AUTH_TOKEN in your .env to');
+      console.log('[TGForwarder Pro] pin it yourself instead.');
+      console.log('[TGForwarder Pro] ─────────────────────────────────────────────');
+    }
   });
+
+  // ==================== GRACEFUL SHUTDOWN ====================
+  // Ensures a debounced mapping-file write in flight isn't lost, and closes
+  // the Telegram socket cleanly, WITHOUT clearing the saved session or the
+  // isEngineRunning flag — so a redeploy/restart auto-reconnects and
+  // auto-resumes forwarding instead of forcing you to log in again.
+  let shuttingDown = false;
+  const shutdown = async (signal: string) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`[TGForwarder Pro] Received ${signal}, shutting down gracefully...`);
+
+    const forceExitTimer = setTimeout(() => {
+      console.warn('[TGForwarder Pro] Graceful shutdown timed out, forcing exit.');
+      process.exit(1);
+    }, 8000);
+    forceExitTimer.unref();
+
+    try {
+      await engine.shutdownGracefully();
+    } catch (err) {
+      console.error('[TGForwarder Pro] Error during engine shutdown:', err);
+    }
+    try {
+      storage.flushPendingWrites();
+    } catch (err) {
+      console.error('[TGForwarder Pro] Error flushing storage on shutdown:', err);
+    }
+
+    server.close(() => process.exit(0));
+  };
+
+  process.on('SIGTERM', () => void shutdown('SIGTERM'));
+  process.on('SIGINT', () => void shutdown('SIGINT'));
 }
 
 startServer().catch((err) => {
   console.error('[TGForwarder Pro] Fatal startup error:', err);
+  process.exit(1);
 });

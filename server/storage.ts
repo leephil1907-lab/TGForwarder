@@ -166,6 +166,9 @@ export class StorageManager {
   private static instance: StorageManager;
   private config: ForwarderConfig;
   private mappings: Map<string, MessageMappingRecord> = new Map();
+  private mappingsSaveTimer: NodeJS.Timeout | null = null;
+  private mappingsDirty = false;
+  private static readonly MAPPINGS_FLUSH_INTERVAL_MS = 3000;
 
   private constructor() {
     this.ensureDataDir();
@@ -239,7 +242,28 @@ export class StorageManager {
     }
   }
 
-  private saveMappingsToFile() {
+  // Marks the mappings as needing a save and schedules a single debounced
+  // flush a few seconds out. Called once per forwarded message, so without
+  // debouncing every single forward would trigger a synchronous rewrite of
+  // the entire (up to 10k-record) mappings file and stall the event loop.
+  private scheduleMappingsSave() {
+    this.mappingsDirty = true;
+    if (this.mappingsSaveTimer) return;
+    this.mappingsSaveTimer = setTimeout(() => {
+      this.mappingsSaveTimer = null;
+      this.flushMappings();
+    }, StorageManager.MAPPINGS_FLUSH_INTERVAL_MS);
+    // Don't let a pending flush keep the process alive on shutdown.
+    if (typeof this.mappingsSaveTimer.unref === 'function') {
+      this.mappingsSaveTimer.unref();
+    }
+  }
+
+  // Synchronous immediate write. Used for the debounced flush, for
+  // user-initiated actions like clearMappings(), and on process shutdown.
+  private flushMappings() {
+    if (!this.mappingsDirty) return;
+    this.mappingsDirty = false;
     try {
       this.ensureDataDir();
       // De-duplicate items by id or exact key when persisting
@@ -250,10 +274,21 @@ export class StorageManager {
         }
       }
       const list = Array.from(uniqueRecords.values());
-      fs.writeFileSync(MAPPINGS_FILE, JSON.stringify(list.slice(-10000), null, 2), 'utf-8');
+      const tmpFile = `${MAPPINGS_FILE}.tmp`;
+      fs.writeFileSync(tmpFile, JSON.stringify(list.slice(-10000), null, 2), 'utf-8');
+      fs.renameSync(tmpFile, MAPPINGS_FILE); // atomic on POSIX filesystems — avoids a torn/corrupt file on crash
     } catch (err) {
       console.error('[StorageManager] Error writing mappings:', err);
     }
+  }
+
+  // Call on graceful shutdown so a pending debounced save isn't lost.
+  public flushPendingWrites(): void {
+    if (this.mappingsSaveTimer) {
+      clearTimeout(this.mappingsSaveTimer);
+      this.mappingsSaveTimer = null;
+    }
+    this.flushMappings();
   }
 
   public isDuplicate(sourceChatId: string, sourceMsgId: number | string, targetChatId: string, contentHash?: string): boolean {
@@ -290,7 +325,7 @@ export class StorageManager {
     if (contentHash) {
       this.mappings.set(`${normSrc}_hash_${contentHash}_${normTgt}`, record);
     }
-    this.saveMappingsToFile();
+    this.scheduleMappingsSave();
     return record;
   }
 
@@ -338,7 +373,8 @@ export class StorageManager {
 
   public clearMappings(): void {
     this.mappings.clear();
-    this.saveMappingsToFile();
+    this.mappingsDirty = true;
+    this.flushMappings();
   }
 
   public getConfig(): ForwarderConfig {
@@ -369,7 +405,9 @@ export class StorageManager {
     this.config = { ...this.config, ...newConfig };
     try {
       this.ensureDataDir();
-      fs.writeFileSync(CONFIG_FILE, JSON.stringify(this.config, null, 2), 'utf-8');
+      const tmpFile = `${CONFIG_FILE}.tmp`;
+      fs.writeFileSync(tmpFile, JSON.stringify(this.config, null, 2), 'utf-8');
+      fs.renameSync(tmpFile, CONFIG_FILE); // atomic on POSIX filesystems
     } catch (err) {
       console.error('[StorageManager] Error writing config:', err);
     }

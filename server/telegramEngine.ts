@@ -55,12 +55,20 @@ export class TelegramEngine {
   private recentLogs: ActivityLog[] = [];
   private entityCache: Map<string, any> = new Map();
   
-  // Rate limiting queue & sliding window
+  // Rate limiting: independent queue + pacing state PER TARGET, so a
+  // flood-wait or slow send on one target never blocks delivery to others.
   private isPaused = false;
-  private messageQueue: QueuedMessage[] = [];
+  private perTargetQueues: Map<string, QueuedMessage[]> = new Map();
+  private perTargetState: Map<string, { lastDispatchTime: number; sentTimestamps: number[] }> = new Map();
   private isProcessingQueue = false;
-  private sentTimestamps: number[] = [];
-  private lastDispatchTime = 0;
+
+  private static readonly DEFAULT_RATE_LIMIT: RateLimitConfig = {
+    minDelayMs: 1200,
+    maxMessagesPerMinute: 25,
+    autoSleepOnFloodWait: true,
+    retryAttempts: 3,
+    exponentialBackoff: true
+  };
 
   private stats: EngineStats = {
     totalReceived: 0,
@@ -599,6 +607,31 @@ export class TelegramEngine {
     this.broadcast('AUTH_STATUS_CHANGED', this.authState);
   }
 
+  // Used on process shutdown (SIGTERM/SIGINT). Unlike disconnect(), this does
+  // NOT clear the saved session or the persisted isEngineRunning flag, so a
+  // restart (e.g. container redeploy) auto-reconnects and auto-resumes
+  // forwarding instead of requiring the user to log in again.
+  public async shutdownGracefully(): Promise<void> {
+    if (this.client && this.activeEventHandler) {
+      try {
+        this.client.removeEventHandler(this.activeEventHandler, new NewMessage({}));
+      } catch (err) {
+        // ignore
+      }
+    }
+    if (this.uptimeInterval) {
+      clearInterval(this.uptimeInterval);
+      this.uptimeInterval = null;
+    }
+    if (this.client) {
+      try {
+        await this.client.disconnect();
+      } catch (err) {
+        // ignore
+      }
+    }
+  }
+
   private cacheEntity(entity: any, idStr?: string) {
     if (!entity) return;
     if (idStr) {
@@ -907,6 +940,8 @@ export class TelegramEngine {
     }
 
     this.isPaused = false;
+    this.perTargetQueues.clear();
+    this.perTargetState.clear();
     this.storage.saveConfig({ isEngineRunning: false });
     this.broadcast('ENGINE_STATE_CHANGED', { isRunning: false, isPaused: false });
 
@@ -1174,7 +1209,8 @@ export class TelegramEngine {
             messageSnippet: snippet
           });
 
-          this.messageQueue.push({
+          const queue = this.perTargetQueues.get(targetId) || [];
+          queue.push({
             event,
             rule,
             targetId,
@@ -1183,6 +1219,7 @@ export class TelegramEngine {
             scheduledTime: Date.now(),
             retries: 0
           });
+          this.perTargetQueues.set(targetId, queue);
         }
       }
 
@@ -1200,66 +1237,58 @@ export class TelegramEngine {
 
   // ==================== QUEUE PROCESSOR & PACING ====================
 
+  private getTargetState(targetId: string) {
+    let state = this.perTargetState.get(targetId);
+    if (!state) {
+      state = { lastDispatchTime: 0, sentTimestamps: [] };
+      this.perTargetState.set(targetId, state);
+    }
+    return state;
+  }
+
+  // Ticks every 150ms and, per target, dispatches at most one message when
+  // that target's own pacing window allows it. Targets are fully independent:
+  // a flood-wait or slow network round-trip on one target never delays
+  // delivery to any other target.
   private startQueueProcessor() {
     if (this.isProcessingQueue) return;
     this.isProcessingQueue = true;
 
-    const processNext = async () => {
+    const tick = () => {
       if (!this.storage.getConfig().isEngineRunning || !this.client) {
         this.isProcessingQueue = false;
         return;
       }
 
-      if (this.messageQueue.length === 0) {
-        setTimeout(processNext, 200);
-        return;
-      }
-
-      const rateLimit: RateLimitConfig = this.storage.getConfig().globalRateLimit || {
-        minDelayMs: 1200,
-        maxMessagesPerMinute: 25,
-        autoSleepOnFloodWait: true,
-        retryAttempts: 3,
-        exponentialBackoff: true
-      };
-
+      const rateLimit: RateLimitConfig = this.storage.getConfig().globalRateLimit || TelegramEngine.DEFAULT_RATE_LIMIT;
       const now = Date.now();
-      // Clean old timestamps for sliding 1-minute window
-      this.sentTimestamps = this.sentTimestamps.filter((t) => now - t < 60000);
 
-      // Check max messages per minute
-      if (this.sentTimestamps.length >= rateLimit.maxMessagesPerMinute) {
-        const oldest = this.sentTimestamps[0];
-        const waitMs = Math.max(200, 60000 - (now - oldest));
-        setTimeout(processNext, waitMs);
-        return;
+      for (const [targetId, queue] of this.perTargetQueues.entries()) {
+        if (queue.length === 0) continue;
+
+        const state = this.getTargetState(targetId);
+        state.sentTimestamps = state.sentTimestamps.filter((t) => now - t < 60000);
+
+        if (state.sentTimestamps.length >= rateLimit.maxMessagesPerMinute) continue;
+        if (now - state.lastDispatchTime < rateLimit.minDelayMs) continue;
+
+        const item = queue.shift();
+        if (!item) continue;
+
+        state.lastDispatchTime = now;
+        state.sentTimestamps.push(now);
+
+        // Fire-and-forget: don't await, so a slow/stuck send to this target
+        // doesn't hold up the tick loop for every other target.
+        this.dispatchItem(item, rateLimit).catch((err) => {
+          console.error('[TelegramEngine] Error dispatching queue item:', err);
+        });
       }
 
-      // Check min delay between sends
-      const timeSinceLast = now - this.lastDispatchTime;
-      if (timeSinceLast < rateLimit.minDelayMs) {
-        setTimeout(processNext, rateLimit.minDelayMs - timeSinceLast);
-        return;
-      }
-
-      const item = this.messageQueue.shift();
-      if (!item) {
-        setTimeout(processNext, 100);
-        return;
-      }
-
-      try {
-        await this.dispatchItem(item, rateLimit);
-        this.lastDispatchTime = Date.now();
-        this.sentTimestamps.push(this.lastDispatchTime);
-      } catch (err) {
-        console.error('[TelegramEngine] Error dispatching queue item:', err);
-      }
-
-      setTimeout(processNext, rateLimit.minDelayMs);
+      setTimeout(tick, 150);
     };
 
-    processNext();
+    tick();
   }
 
   private async dispatchItem(item: QueuedMessage, rateLimit: RateLimitConfig) {
@@ -1359,7 +1388,9 @@ export class TelegramEngine {
         if (rateLimit.autoSleepOnFloodWait && item.retries < rateLimit.retryAttempts) {
           item.retries++;
           setTimeout(() => {
-            this.messageQueue.unshift(item);
+            const queue = this.perTargetQueues.get(item.targetId) || [];
+            queue.unshift(item);
+            this.perTargetQueues.set(item.targetId, queue);
           }, (waitSec + 1) * 1000);
         } else {
           this.stats.totalFailed++;

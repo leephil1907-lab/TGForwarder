@@ -7,12 +7,20 @@ import { LiveConsole } from './components/LiveConsole';
 import { StatsCards } from './components/StatsCards';
 import { PythonExporter } from './components/PythonExporter';
 import { RateLimitModal } from './components/RateLimitModal';
+import { AccessGate } from './components/AccessGate';
+import { getStoredToken, clearStoredToken, withTokenParam } from './lib/authToken';
 import { AuthState, SafeConfig, DiscoveredChat, ActivityLog, EngineStats, ForwardingRule, RateLimitConfig, SafeTelegramAccount } from './types';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<string>('funnel');
   const [isAuthModalOpen, setIsAuthModalOpen] = useState<boolean>(false);
   const [isRateLimitModalOpen, setIsRateLimitModalOpen] = useState<boolean>(false);
+
+  // Access-token gate: everything below is only mounted once we have a
+  // token that the server has actually accepted (verified via /api/health,
+  // which is the one public route, followed by a real authed call).
+  const [hasToken, setHasToken] = useState<boolean>(() => Boolean(getStoredToken()));
+  const [gateError, setGateError] = useState<string | null>(null);
 
   // Core App State
   const [authState, setAuthState] = useState<AuthState>({ status: 'disconnected', userProfile: null });
@@ -46,6 +54,14 @@ export default function App() {
         fetch('/api/logs')
       ]);
 
+      // Any 401 means the stored token is wrong/stale — drop back to the gate.
+      if ([configRes, authRes, statsRes, logsRes].some((r) => r.status === 401)) {
+        clearStoredToken();
+        setHasToken(false);
+        setGateError('That token was rejected by the server. Please check the console output and try again.');
+        return;
+      }
+
       if (configRes.ok) {
         const configData = await configRes.json();
         setConfig(configData);
@@ -68,6 +84,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (!hasToken) return;
     fetchData();
 
     // Setup Server-Sent Events (SSE) stream for real-time live events
@@ -85,7 +102,7 @@ export default function App() {
         }
       }
 
-      eventSource = new EventSource('/api/stream');
+      eventSource = new EventSource(withTokenParam('/api/stream'));
 
       eventSource.onopen = () => {
         // SSE connected
@@ -168,7 +185,7 @@ export default function App() {
       }
       document.removeEventListener('visibilitychange', handleVisibility);
     };
-  }, [fetchData]);
+  }, [fetchData, hasToken]);
 
   // Scan dialogs
   const handleScanChats = async () => {
@@ -264,6 +281,18 @@ export default function App() {
     retryAttempts: 3,
     exponentialBackoff: true
   };
+
+  if (!hasToken) {
+    return (
+      <AccessGate
+        error={gateError}
+        onUnlock={() => {
+          setGateError(null);
+          setHasToken(true);
+        }}
+      />
+    );
+  }
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-['Plus_Jakarta_Sans']">
