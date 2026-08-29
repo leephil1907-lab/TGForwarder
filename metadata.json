@@ -1,0 +1,6 @@
+{
+  "name": "TGForwarder Pro",
+  "description": "Automated Telegram message forwarding pipeline engine from private channels and groups to target channels with live monitoring, signature stripping, and duplicate protection.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
