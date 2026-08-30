@@ -2,7 +2,7 @@ name: TGForwarder CI
 
 on:
   push:
-    branches: [main, production-v2-isolation-history-editor]
+    branches: [main, production-v2-isolation-history-editor, production-data-accuracy-fix]
   pull_request:
     branches: [main]
 
