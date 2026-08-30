@@ -2,7 +2,7 @@ name: TGForwarder CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, production-v2-isolation-history-editor]
   pull_request:
     branches: [main]
 
@@ -17,7 +17,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
 
       - name: Install dependencies
