@@ -41,6 +41,9 @@ const normalizeHistoryMessage = (message: any) => {
 
 async function startServer() {
   const app = express();
+  // Railway terminates TLS at its reverse proxy and forwards the client IP.
+  // Trust the single proxy hop so express-rate-limit can safely use X-Forwarded-For.
+  app.set('trust proxy', 1);
   const PORT = parseInt(process.env.PORT || '3000', 10);
   const HOST = process.env.HOST || '0.0.0.0';
   app.use(helmet({ contentSecurityPolicy: false }));
@@ -99,15 +102,17 @@ async function startServer() {
   app.get('/api/history', async (req, res) => {
     try {
       const sourceId = String(req.query.sourceId || '').trim();
-      const limit = Math.min(Math.max(parseInt(String(req.query.limit || '50'), 10) || 50, 1), 200);
-      const offsetId = Math.max(parseInt(String(req.query.offsetId || '0'), 10) || 0, 0);
+      const limit = Math.min(Math.max(parseInt(String(req.query.limit || '100'), 10) || 100, 1), 100);
+      const offsetIdRaw = String(req.query.offsetId || '').trim();
+      const offsetId = offsetIdRaw ? Number(offsetIdRaw) : 0;
       if (!sourceId) return res.status(400).json({ error: 'sourceId is required.' });
-      const sourceEntity = await (engine as any).resolveEntity(sourceId);
+      const entity = await (engine as any).resolveEntity(sourceId);
       const client = getClient(engine);
-      const messages: any[] = [];
-      for await (const message of client.iterMessages(sourceEntity, { limit, offsetId: offsetId || undefined })) messages.push(normalizeHistoryMessage(message));
-      const nextOffsetId = messages.length ? messages[messages.length - 1].id : null;
-      res.json({ success: true, sourceId, count: messages.length, messages, nextOffsetId, hasMore: messages.length === limit && nextOffsetId !== null });
+      const messages = await client.getMessages(entity, { limit, offsetId });
+      const normalized = messages.map(normalizeHistoryMessage);
+      const last = normalized[normalized.length - 1];
+      const nextOffsetId = last ? Number(last.id) : null;
+      res.json({ success: true, sourceId, count: normalized.length, messages: normalized, nextOffsetId, hasMore: normalized.length === limit && nextOffsetId !== null });
     } catch (err: any) { res.status(500).json({ error: err.message || 'Unable to retrieve Telegram history.' }); }
   });
 
