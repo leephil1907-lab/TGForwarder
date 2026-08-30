@@ -116,7 +116,7 @@ async function startServer() {
   app.post('/api/chats/test-target', async (req, res) => { try { if (!req.body.targetId) return res.status(400).json({ error: 'Target ID is required.' }); res.json(await engine.testTargetAccess(req.body.targetId, req.body.testMessage)); } catch (err: any) { res.status(500).json({ error: err.message || 'Failed to verify target entity' }); } });
 
   app.get('/api/rules', (_req, res) => res.json(storage.getConfig().rules));
-  app.post('/api/rules', (req, res) => { try { const { name, sourceId, sourceTitle, sourceUsername, targetIds, targetTitles, removeForwardSignature, duplicateProtection, filterKeywords, dropLinks, prependText, appendText, enabled } = req.body; if (!sourceId || !Array.isArray(targetIds) || !targetIds.length) return res.status(400).json({ error: 'Source ID and at least one Target ID are required.' }); res.json(storage.addRule({ name: name || `Funnel: ${sourceTitle || sourceId}`, sourceId: sourceId.trim(), sourceTitle: sourceTitle || sourceId, sourceUsername, targetIds: targetIds.map((t: string) => t.trim()), targetTitles: targetTitles || targetIds, removeForwardSignature: removeForwardSignature ?? true, duplicateProtection: duplicateProtection ?? true, filterKeywords: filterKeywords || [], dropLinks: dropLinks ?? false, prependText: prependText || '', appendText: appendText || '', enabled: enabled ?? true })); } catch (err: any) { res.status(500).json({ error: err.message || 'Failed to save rule' }); } });
+  app.post('/api/rules', (req, res) => { try { const { name, sourceId, sourceTitle, sourceUsername, targetIds, targetTitles, removeForwardSignature, duplicateProtection, filterKeywords, dropLinks, prependText, appendText, enabled } = req.body; if (!sourceId || !Array.isArray(targetIds) || !targetIds.length) return res.status(400).json({ error: 'Source ID and at least one Target ID are required.' }); res.json(storage.addRule({ name: name || `Funnel: ${sourceTitle || sourceId}`, sourceId: sourceId.trim(), sourceTitle: sourceTitle || sourceId, sourceUsername, targetIds: targetIds.map((t: string) => t.trim()), targetTitles: targetTitles || targetIds, removeForwardSignature: removeForwardSignature ?? true, duplicateProtection: duplicateProtection ?? true, filterKeywords: filterKeywords || [], dropLinks: dropLinks ?? false, dropLinks: dropLinks ?? false, prependText: prependText || '', appendText: appendText || '', enabled: enabled ?? true })); } catch (err: any) { res.status(500).json({ error: err.message || 'Failed to save rule' }); } });
   app.put('/api/rules/:id', (req, res) => { try { const updated = storage.updateRule(req.params.id, req.body); if (!updated) return res.status(404).json({ error: 'Rule not found' }); res.json(updated); } catch (err: any) { res.status(500).json({ error: err.message || 'Failed to update rule' }); } });
   app.delete('/api/rules/:id', (req, res) => res.json({ success: storage.deleteRule(req.params.id) }));
 
@@ -130,15 +130,17 @@ async function startServer() {
   app.post('/api/logs/clear', (_req, res) => { clearEngineLogs(engine); res.json({ success: true }); });
   app.get('/api/mappings', (req, res) => { const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 100; res.json({ totalCount: storage.getMappingsCount(), mappings: storage.getAllMappings(limit) }); });
 
-  // New incoming posts waiting for operator edit/preview/publish.
   app.get('/api/pending', (_req, res) => { res.json({ success: true, posts: (engine as any).getPendingPosts?.() || [] }); });
   app.post('/api/pending/:key/publish', async (req, res) => {
-    try { const key = decodeURIComponent(req.params.key); const result = await (engine as any).publishPendingPost?.(key, typeof req.body?.text === 'string' ? req.body.text : undefined); if (!result) return res.status(500).json({ error: 'Manual publishing is unavailable.' }); res.json(result); }
-    catch (err: any) { res.status(502).json({ error: err.message || 'Failed to publish pending Telegram post.' }); }
+    try {
+      const key = decodeURIComponent(req.params.key);
+      const result = await (engine as any).publishPendingPost?.(key, typeof req.body?.text === 'string' ? req.body.text : undefined);
+      if (!result) return res.status(500).json({ error: 'Manual publishing is unavailable.' });
+      res.json(result);
+    } catch (err: any) { res.status(502).json({ error: err.message || 'Failed to publish pending Telegram post.' }); }
   });
   app.delete('/api/pending/:key', (req, res) => { const key = decodeURIComponent(req.params.key); const result = (engine as any).discardPendingPost?.(key); res.json(result || { success: false }); });
 
-  // Real Telegram source history. This reads actual messages from Telegram; it does not synthesize history from local logs.
   app.get('/api/history', async (req, res) => {
     try {
       const client = getClient(engine);
@@ -146,35 +148,51 @@ async function startServer() {
       const limit = Math.min(Math.max(parseInt(String(req.query.limit || '50'), 10) || 50, 1), 200);
       const offsetId = Math.max(parseInt(String(req.query.offsetId || '0'), 10) || 0, 0);
       if (!sourceId) return res.status(400).json({ error: 'sourceId is required.' });
+      // Resolve the real source entity through the engine so channels outside
+      // the first 150 dialogs are still addressable with their access hash.
+      const sourceEntity = await (engine as any).resolveEntity(sourceId);
       const messages: any[] = [];
-      for await (const message of client.iterMessages(sourceId, { limit, offsetId: offsetId || undefined })) messages.push(normalizeHistoryMessage(message));
+      for await (const message of client.iterMessages(sourceEntity, { limit, offsetId: offsetId || undefined })) messages.push(normalizeHistoryMessage(message));
       const nextOffsetId = messages.length ? messages[messages.length - 1].id : null;
       res.json({ success: true, sourceId, count: messages.length, messages, nextOffsetId, hasMore: messages.length === limit && nextOffsetId !== null });
     } catch (err: any) { res.status(500).json({ error: err.message || 'Unable to retrieve Telegram history.' }); }
   });
 
-  // Copy a real source message, optionally with edited text/caption, to one or more real Telegram destinations.
   app.post('/api/history/forward', async (req, res) => {
     try {
       const client = getClient(engine);
       const { sourceId, messageId, targetIds, text } = req.body;
       if (!sourceId || !messageId || !Array.isArray(targetIds) || !targetIds.length) return res.status(400).json({ error: 'sourceId, messageId and targetIds are required.' });
-      const sourceMessages = await client.getMessages(sourceId, { ids: [Number(messageId)] });
+      const sourceEntity = await (engine as any).resolveEntity(String(sourceId));
+      const sourceMessages = await client.getMessages(sourceEntity, { ids: [Number(messageId)] });
       const sourceMessage = Array.isArray(sourceMessages) ? sourceMessages[0] : sourceMessages;
       if (!sourceMessage) return res.status(404).json({ error: 'Telegram source message was not found.' });
       const finalText = typeof text === 'string' ? text : (sourceMessage.message || sourceMessage.text || '');
       const results: any[] = [];
-      for (const targetId of targetIds) {
+      for (const rawTargetId of targetIds) {
+        const targetId = String(rawTargetId).trim();
         try {
+          const targetEntity = await (engine as any).resolveEntity(targetId);
           let sent: any;
-          if (sourceMessage.media) sent = await client.sendFile(targetId, { file: sourceMessage.media, caption: finalText });
-          else sent = await client.sendMessage(targetId, { message: finalText });
+          if (sourceMessage.media) sent = await client.sendFile(targetEntity, { file: sourceMessage.media, caption: finalText });
+          else sent = await client.sendMessage(targetEntity, { message: finalText });
           results.push({ targetId, success: true, targetMessageId: sent?.id ?? null });
-        } catch (err: any) { results.push({ targetId, success: false, error: err.message || 'Telegram send failed' }); }
+        } catch (err: any) {
+          results.push({ targetId, success: false, error: err.message || 'Telegram send failed' });
+        }
       }
       const succeeded = results.filter((r) => r.success).length;
-      (engine as any).log?.({ level: succeeded ? 'success' : 'error', category: 'forward', title: 'Manual Post Forward', message: `Published Telegram message ${messageId} to ${succeeded}/${targetIds.length} destination(s).`, sourceId: String(sourceId), targetId: targetIds[0] ? String(targetIds[0]) : undefined });
-      res.status(succeeded ? 200 : 502).json({ success: succeeded > 0, sourceId, messageId: Number(messageId), results });
+      const failed = results.filter((r) => !r.success);
+      (engine as any).log?.({
+        level: succeeded ? 'success' : 'error',
+        category: 'forward',
+        title: succeeded === targetIds.length ? 'Manual Post Forward' : 'Manual Post Forward Failed',
+        message: succeeded ? `Published Telegram message ${messageId} to ${succeeded}/${targetIds.length} destination(s).` : `Failed to publish Telegram message ${messageId} to ${targetIds.length} destination(s): ${failed.map((r: any) => `${r.targetId}: ${r.error}`).join(' | ')}`,
+        sourceId: String(sourceId),
+        targetId: targetIds[0] ? String(targetIds[0]) : undefined,
+        targetTitle: targetIds[0] ? String(targetIds[0]) : undefined
+      });
+      res.status(succeeded === targetIds.length ? 200 : 502).json({ success: succeeded === targetIds.length, sourceId, messageId: Number(messageId), results, error: succeeded === targetIds.length ? undefined : failed.map((r: any) => `${r.targetId}: ${r.error}`).join(' | ') });
     } catch (err: any) { res.status(500).json({ error: err.message || 'Unable to forward the Telegram message.' }); }
   });
 
