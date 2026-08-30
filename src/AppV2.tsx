@@ -9,6 +9,7 @@ import { PythonExporter } from './components/PythonExporter';
 import { RateLimitModal } from './components/RateLimitModal';
 import { AccessGate } from './components/AccessGate';
 import { PostHistory } from './components/PostHistory';
+import { PendingPosts } from './components/PendingPosts';
 import { getStoredToken, clearStoredToken, withTokenParam } from './lib/authToken';
 import { AuthState, SafeConfig, DiscoveredChat, ActivityLog, EngineStats, RateLimitConfig, SafeTelegramAccount } from './types';
 
@@ -46,7 +47,7 @@ export default function AppV2() {
   const scan=async()=>{setScanning(true);try{const r=await fetch('/api/chats/discover');const d=await r.json();if(!r.ok)throw new Error(d.error);setChats(d.chats||[]);}catch(e:any){alert(`Chat Discovery Error: ${e.message}`);}finally{setScanning(false);}};
   useEffect(()=>{if(authState.status==='connected'&&!chats.length)scan();},[authState.status]);
   const toggleEngine=async()=>{if(!config)return;setEngineLoading(true);try{const r=await fetch(config.isEngineRunning?'/api/engine/stop':'/api/engine/start',{method:'POST'});const d=await r.json();if(!r.ok)throw new Error(d.error);await fetchData();}catch(e:any){alert(`Forwarding Engine Error: ${e.message}`);}finally{setEngineLoading(false);}};
-  const clearLogs=async()=>{try{await fetch('/api/logs/clear',{method:'POST'});}finally{setLogs([]);}};
+  const clearLogs=async()=>{try{await fetch('/api/logs/clear',{method:'POST');}finally{setLogs([]);}};
   const saveRateLimit=async(v:RateLimitConfig)=>{const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({globalRateLimit:v})});const d=await r.json();if(!r.ok)throw new Error(d.error||'Failed to save rate limit');setConfig(d);};
   const accounts:SafeTelegramAccount[]=config?.accounts?.length?config.accounts:(authState.userProfile?[{id:authState.userProfile.id,name:authState.userProfile.firstName,username:authState.userProfile.username,phone:authState.userProfile.phone||authState.phoneNumber,status:'connected',userProfile:authState.userProfile}]:[]);
   const rate=config?.globalRateLimit||{minDelayMs:1200,maxMessagesPerMinute:25,autoSleepOnFloodWait:true,retryAttempts:3,exponentialBackoff:true};
@@ -55,7 +56,7 @@ export default function AppV2() {
   return <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-['Plus_Jakarta_Sans']">
     <Navbar authState={authState} isEngineRunning={Boolean(config?.isEngineRunning)} stats={stats} activeTab={activeTab} setActiveTab={setActiveTab} onOpenAuth={()=>setAuthOpen(true)} onToggleEngine={toggleEngine} isEngineLoading={engineLoading}/>
     <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
-      {activeTab==='funnel'&&<RulesManager rules={config?.rules||[]} accounts={accounts} discoveredChats={chats} isEngineRunning={Boolean(config?.isEngineRunning)} onRefreshRules={fetchData} onOpenDiscovery={()=>setActiveTab('chats')} quickSourceChat={quickSource} quickTargetChat={quickTarget} onClearQuickSelection={()=>{setQuickSource(null);setQuickTarget(null);}}/>}
+      {activeTab==='funnel'&&<><PendingPosts/><RulesManager rules={config?.rules||[]} accounts={accounts} discoveredChats={chats} isEngineRunning={Boolean(config?.isEngineRunning)} onRefreshRules={fetchData} onOpenDiscovery={()=>setActiveTab('chats')} quickSourceChat={quickSource} quickTargetChat={quickTarget} onClearQuickSelection={()=>{setQuickSource(null);setQuickTarget(null);}}/></>}
       {activeTab==='chats'&&<ChatExplorer discoveredChats={chats} isScanning={scanning} onScanChats={scan} onSelectAsSource={c=>{setQuickSource(c);setActiveTab('funnel');}} onSelectAsTarget={c=>{setQuickTarget(c);setActiveTab('funnel');}} authState={authState}/>} 
       {activeTab==='history'&&<PostHistory chats={chats} authState={authState}/>} 
       {activeTab==='console'&&<LiveConsole logs={logs} onClearLogs={clearLogs} isEngineRunning={Boolean(config?.isEngineRunning)}/>} 

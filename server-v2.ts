@@ -19,6 +19,16 @@ const getClient = (engine: TelegramEngine): any => {
   return client;
 };
 
+const normalizeTelegramTimestamp = (value: any): number | null => {
+  if (value === null || value === undefined || value === '') return null;
+  if (value instanceof Date) return value.getTime();
+  if (typeof value === 'number' && Number.isFinite(value)) return value < 100000000000 ? Math.round(value * 1000) : Math.round(value);
+  const numeric = Number(value);
+  if (Number.isFinite(numeric)) return numeric < 100000000000 ? Math.round(numeric * 1000) : Math.round(numeric);
+  const parsed = Date.parse(String(value));
+  return Number.isNaN(parsed) ? null : parsed;
+};
+
 const normalizeHistoryMessage = (message: any) => {
   const media = message.media;
   let mediaType: string | null = null;
@@ -31,7 +41,7 @@ const normalizeHistoryMessage = (message: any) => {
   else if (media) mediaType = 'media';
   return {
     id: Number(message.id),
-    date: message.date ? new Date(message.date).getTime() : null,
+    date: normalizeTelegramTimestamp(message.date),
     text: message.message || message.text || '',
     mediaType,
     hasMedia: Boolean(media),
@@ -120,16 +130,26 @@ async function startServer() {
   app.post('/api/logs/clear', (_req, res) => { clearEngineLogs(engine); res.json({ success: true }); });
   app.get('/api/mappings', (req, res) => { const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 100; res.json({ totalCount: storage.getMappingsCount(), mappings: storage.getAllMappings(limit) }); });
 
+  // New incoming posts waiting for operator edit/preview/publish.
+  app.get('/api/pending', (_req, res) => { res.json({ success: true, posts: (engine as any).getPendingPosts?.() || [] }); });
+  app.post('/api/pending/:key/publish', async (req, res) => {
+    try { const key = decodeURIComponent(req.params.key); const result = await (engine as any).publishPendingPost?.(key, typeof req.body?.text === 'string' ? req.body.text : undefined); if (!result) return res.status(500).json({ error: 'Manual publishing is unavailable.' }); res.json(result); }
+    catch (err: any) { res.status(502).json({ error: err.message || 'Failed to publish pending Telegram post.' }); }
+  });
+  app.delete('/api/pending/:key', (req, res) => { const key = decodeURIComponent(req.params.key); const result = (engine as any).discardPendingPost?.(key); res.json(result || { success: false }); });
+
   // Real Telegram source history. This reads actual messages from Telegram; it does not synthesize history from local logs.
   app.get('/api/history', async (req, res) => {
     try {
       const client = getClient(engine);
       const sourceId = String(req.query.sourceId || '').trim();
       const limit = Math.min(Math.max(parseInt(String(req.query.limit || '50'), 10) || 50, 1), 200);
+      const offsetId = Math.max(parseInt(String(req.query.offsetId || '0'), 10) || 0, 0);
       if (!sourceId) return res.status(400).json({ error: 'sourceId is required.' });
       const messages: any[] = [];
-      for await (const message of client.iterMessages(sourceId, { limit })) messages.push(normalizeHistoryMessage(message));
-      res.json({ success: true, sourceId, count: messages.length, messages });
+      for await (const message of client.iterMessages(sourceId, { limit, offsetId: offsetId || undefined })) messages.push(normalizeHistoryMessage(message));
+      const nextOffsetId = messages.length ? messages[messages.length - 1].id : null;
+      res.json({ success: true, sourceId, count: messages.length, messages, nextOffsetId, hasMore: messages.length === limit && nextOffsetId !== null });
     } catch (err: any) { res.status(500).json({ error: err.message || 'Unable to retrieve Telegram history.' }); }
   });
 
@@ -147,16 +167,13 @@ async function startServer() {
       for (const targetId of targetIds) {
         try {
           let sent: any;
-          if (sourceMessage.media) {
-            sent = await client.sendFile(targetId, { file: sourceMessage.media, caption: finalText });
-          } else {
-            sent = await client.sendMessage(targetId, { message: finalText });
-          }
+          if (sourceMessage.media) sent = await client.sendFile(targetId, { file: sourceMessage.media, caption: finalText });
+          else sent = await client.sendMessage(targetId, { message: finalText });
           results.push({ targetId, success: true, targetMessageId: sent?.id ?? null });
         } catch (err: any) { results.push({ targetId, success: false, error: err.message || 'Telegram send failed' }); }
       }
       const succeeded = results.filter((r) => r.success).length;
-      (engine as any).log?.({ level: succeeded ? 'success' : 'error', category: 'forward', title: 'Manual Post Forward', message: `Published Telegram message ${messageId} to ${succeeded}/${targetIds.length} destination(s).`, sourceId: String(sourceId) });
+      (engine as any).log?.({ level: succeeded ? 'success' : 'error', category: 'forward', title: 'Manual Post Forward', message: `Published Telegram message ${messageId} to ${succeeded}/${targetIds.length} destination(s).`, sourceId: String(sourceId), targetId: targetIds[0] ? String(targetIds[0]) : undefined });
       res.status(succeeded ? 200 : 502).json({ success: succeeded > 0, sourceId, messageId: Number(messageId), results });
     } catch (err: any) { res.status(500).json({ error: err.message || 'Unable to forward the Telegram message.' }); }
   });

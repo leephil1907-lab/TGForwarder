@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { History, RefreshCw, Send, X, Edit3, Image, Video, FileText, CheckCircle2, AlertCircle } from 'lucide-react';
+import { History, RefreshCw, Send, X, Edit3, Image, CheckCircle2, AlertCircle, ChevronDown } from 'lucide-react';
 import { DiscoveredChat, AuthState } from '../types';
 
 interface Props { chats: DiscoveredChat[]; authState: AuthState; }
@@ -9,22 +9,29 @@ export const PostHistory: React.FC<Props> = ({ chats, authState }) => {
   const [sourceId, setSourceId] = useState('');
   const [messages, setMessages] = useState<Msg[]>([]);
   const [loading, setLoading] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [selected, setSelected] = useState<Msg | null>(null);
   const [editedText, setEditedText] = useState('');
   const [targetIds, setTargetIds] = useState<string[]>([]);
   const [publishing, setPublishing] = useState(false);
   const [notice, setNotice] = useState<{ok:boolean;text:string}|null>(null);
+  const [nextOffsetId, setNextOffsetId] = useState<number|null>(null);
+  const [hasMore, setHasMore] = useState(false);
 
-  const loadHistory = async () => {
+  const loadHistory = async (append = false) => {
     if (!sourceId) return;
-    setLoading(true); setNotice(null);
+    append ? setLoadingMore(true) : setLoading(true);
+    setNotice(null);
     try {
-      const res = await fetch(`/api/history?sourceId=${encodeURIComponent(sourceId)}&limit=100`);
+      const offset = append && nextOffsetId ? `&offsetId=${nextOffsetId}` : '';
+      const res = await fetch(`/api/history?sourceId=${encodeURIComponent(sourceId)}&limit=100${offset}`);
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to load Telegram history');
-      setMessages(data.messages || []);
+      setMessages(prev => append ? [...prev, ...(data.messages || [])] : (data.messages || []));
+      setNextOffsetId(data.nextOffsetId ?? null);
+      setHasMore(Boolean(data.hasMore));
     } catch (e:any) { setNotice({ok:false,text:e.message}); }
-    finally { setLoading(false); }
+    finally { append ? setLoadingMore(false) : setLoading(false); }
   };
 
   const openEditor = (msg: Msg) => { setSelected(msg); setEditedText(msg.text || ''); setTargetIds([]); setNotice(null); };
@@ -49,11 +56,11 @@ export const PostHistory: React.FC<Props> = ({ chats, authState }) => {
   return <div className="space-y-5">
     <div className="p-5 rounded-2xl bg-slate-900 border border-slate-800 shadow-xl">
       <div className="flex flex-col lg:flex-row lg:items-end gap-3">
-        <div className="flex-1"><div className="flex items-center gap-2 mb-2"><History className="w-5 h-5 text-cyan-400"/><h2 className="text-lg font-bold text-white">Source Post History</h2></div><p className="text-xs text-slate-400">Loads actual older messages from Telegram. Nothing is generated from local forwarding logs.</p></div>
-        <select value={sourceId} onChange={e=>setSourceId(e.target.value)} className="px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white min-w-[260px]">
+        <div className="flex-1"><div className="flex items-center gap-2 mb-2"><History className="w-5 h-5 text-cyan-400"/><h2 className="text-lg font-bold text-white">Source Post History</h2></div><p className="text-xs text-slate-400">Loads actual Telegram messages in pages of 100. Dates are normalized from Telegram timestamps.</p></div>
+        <select value={sourceId} onChange={e=>{setSourceId(e.target.value);setMessages([]);setNextOffsetId(null);setHasMore(false);}} className="px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white min-w-[260px]">
           <option value="">Select source channel</option>{chats.filter(c=>c.type==='channel'||c.type==='group'||c.type==='supergroup').map(c=><option key={c.id} value={c.id}>{c.title} ({c.id})</option>)}
         </select>
-        <button onClick={loadHistory} disabled={!sourceId||loading} className="px-4 py-2 rounded-xl bg-cyan-600 hover:bg-cyan-500 disabled:opacity-50 text-white text-xs font-bold flex items-center gap-2"><RefreshCw className={`w-3.5 h-3.5 ${loading?'animate-spin':''}`}/>{loading?'Loading…':'Load History'}</button>
+        <button onClick={()=>loadHistory(false)} disabled={!sourceId||loading} className="px-4 py-2 rounded-xl bg-cyan-600 hover:bg-cyan-500 disabled:opacity-50 text-white text-xs font-bold flex items-center gap-2"><RefreshCw className={`w-3.5 h-3.5 ${loading?'animate-spin':''}`}/>{loading?'Loading…':'Load History'}</button>
       </div>
     </div>
 
@@ -65,6 +72,7 @@ export const PostHistory: React.FC<Props> = ({ chats, authState }) => {
         <button onClick={()=>openEditor(msg)} className="self-center px-3 py-2 rounded-lg bg-cyan-600/20 border border-cyan-700 text-cyan-300 text-xs font-semibold flex items-center gap-1.5"><Edit3 className="w-3.5 h-3.5"/>Edit & Publish</button>
       </div>)}
       {!loading && sourceId && messages.length===0 && <div className="p-10 text-center text-xs text-slate-500">No messages were returned by Telegram for this source.</div>}
+      {hasMore && <div className="flex justify-center pt-3"><button onClick={()=>loadHistory(true)} disabled={loadingMore} className="px-5 py-2 rounded-xl bg-slate-900 border border-slate-700 text-slate-200 text-xs font-bold flex items-center gap-2 hover:border-cyan-700"><ChevronDown className="w-4 h-4"/>{loadingMore?'Loading older posts…':'Load Older Posts'}</button></div>}
     </div>
 
     {selected && <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
