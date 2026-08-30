@@ -1,36 +1,50 @@
 # TGForwarder production deployment
 
-## Vercel
+## Recommended: Railway worker + dashboard
 
-TGForwarder is an Express application with a Vite/React frontend. Vercel should deploy the Express application as the backend entrypoint; do not add a separate `/api/*` rewrite that points API requests at the frontend.
+TGForwarder is a long-running Express + GramJS application. For the real Telegram worker, deploy the repository as a persistent Railway service rather than as Vercel-only serverless functions.
 
-Required environment variables:
+The repository now includes `railway.json` with:
 
-- `APP_AUTH_TOKEN` — long random access token used by the dashboard.
-- `TG_API_ID` — Telegram API ID (optional if entered through the dashboard).
-- `TG_API_HASH` — Telegram API hash (optional if entered through the dashboard).
-- `TG_SESSION_STRING` — optional GramJS StringSession for automatic login.
+- `npm run build` as the build command
+- `npm start` as the start command
+- `/api/health` as the health check
+- automatic restart on failure
+
+### Railway environment variables
+
+Set these in Railway **Variables**. Never commit real values to GitHub.
+
+- `APP_AUTH_TOKEN` — long random secret used by the dashboard API.
+- `TG_API_ID` — optional Telegram API ID; you can also enter it through the dashboard.
+- `TG_API_HASH` — optional Telegram API hash; you can also enter it through the dashboard.
+- `TG_SESSION_STRING` — optional existing GramJS StringSession. Treat it like a password.
 - `TG_BOT_TOKEN` — optional bot token login.
-- `TG_SOURCE_ID` / `TG_TARGET_ID` — optional initial forwarding rule.
+- `TG_SOURCE_ID` / `TG_TARGET_ID` — optional initial rule.
+- `TG_DATA_DIR=/data` — recommended when a Railway Volume is mounted at `/data`.
+- `NODE_ENV=production`
+- `HOST=0.0.0.0`
 
-### Important persistence limitation
+### Persistence
 
-The forwarding engine uses local `.data` files for configuration, mappings and generated access-token fallback. Vercel Functions do not provide durable local storage between invocations. For a production Telegram forwarding worker, use a persistent Node host/VPS/container for the worker and a persistent database for application state.
+Attach a Railway Volume and mount it at `/data`, then set `TG_DATA_DIR=/data`. This keeps configuration, forwarding mappings, and the saved Telegram session across redeploys/restarts. Without persistent storage, local files may be lost when the service is recreated.
 
-`APP_AUTH_TOKEN` should therefore always be configured in Vercel rather than relying on the generated `.data/auth_token.txt` fallback.
+### Dashboard connection
+
+If Railway hosts the complete application, the React/Vite dashboard and Express API are served by the same origin. No separate API hostname is required; the browser calls `/api/*` directly.
+
+If the frontend is hosted separately (for example on Vercel), configure the frontend's API base URL to the Railway public URL and ensure CORS is configured for that frontend origin.
 
 ### API verification
 
-After deployment, verify:
+After deployment, open:
 
-- `GET /api/health` returns JSON, not `index.html`.
-- Authenticated requests send `Authorization: Bearer <APP_AUTH_TOKEN>`.
-- SSE uses `/api/stream?token=<APP_AUTH_TOKEN>` because EventSource cannot set Authorization headers.
-- `/api/auth/request-code` accepts `{ apiId, apiHash, phoneNumber }`.
-- `/api/auth/verify-code` accepts `{ phoneCode }`.
-- `/api/auth/verify-2fa` accepts `{ password }`.
-- `/api/auth/session-login` accepts `{ apiId, apiHash, sessionString }`.
+`https://YOUR-RAILWAY-DOMAIN/api/health`
 
-## Recommended production architecture
+It should return JSON containing `status: "ok"` and worker status. Do not proceed until this endpoint returns JSON rather than the frontend HTML.
 
-For Telegram MTProto forwarding, run the persistent Express/Telegram worker on a VPS/container (Railway, Render, Fly.io, Docker host, etc.) and serve the React UI from Vercel if desired. Vercel can remain the frontend while the worker keeps its Telegram socket, background queues and persistent state alive.
+## Vercel
+
+Vercel can host the React UI, but it should not be treated as the durable Telegram worker host. Vercel Functions have ephemeral local storage and are not a substitute for a persistent MTProto process.
+
+If Vercel is used for the UI, keep the Telegram engine on Railway/VPS and point the UI API requests to the Railway URL.
