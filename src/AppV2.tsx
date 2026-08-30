@@ -47,7 +47,7 @@ export default function AppV2() {
   const scan=async()=>{setScanning(true);try{const r=await fetch('/api/chats/discover');const d=await r.json();if(!r.ok)throw new Error(d.error);setChats(d.chats||[]);}catch(e:any){alert(`Chat Discovery Error: ${e.message}`);}finally{setScanning(false);}};
   useEffect(()=>{if(authState.status==='connected'&&!chats.length)scan();},[authState.status]);
   const toggleEngine=async()=>{if(!config)return;setEngineLoading(true);try{const r=await fetch(config.isEngineRunning?'/api/engine/stop':'/api/engine/start',{method:'POST'});const d=await r.json();if(!r.ok)throw new Error(d.error);await fetchData();}catch(e:any){alert(`Forwarding Engine Error: ${e.message}`);}finally{setEngineLoading(false);}};
-  const clearLogs=async()=>{try{await fetch('/api/logs/clear',{method:'POST');}finally{setLogs([]);}};
+  const clearLogs=async()=>{try{await fetch('/api/logs/clear',{method:'POST'});}finally{setLogs([]);}};
   const saveRateLimit=async(v:RateLimitConfig)=>{const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({globalRateLimit:v})});const d=await r.json();if(!r.ok)throw new Error(d.error||'Failed to save rate limit');setConfig(d);};
   const accounts:SafeTelegramAccount[]=config?.accounts?.length?config.accounts:(authState.userProfile?[{id:authState.userProfile.id,name:authState.userProfile.firstName,username:authState.userProfile.username,phone:authState.userProfile.phone||authState.phoneNumber,status:'connected',userProfile:authState.userProfile}]:[]);
   const rate=config?.globalRateLimit||{minDelayMs:1200,maxMessagesPerMinute:25,autoSleepOnFloodWait:true,retryAttempts:3,exponentialBackoff:true};
