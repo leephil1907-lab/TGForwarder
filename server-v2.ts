@@ -12,13 +12,11 @@ const clearEngineLogs = (engine: TelegramEngine) => {
   if (Array.isArray(raw.recentLogs)) raw.recentLogs = [];
   if (typeof raw.broadcast === 'function') raw.broadcast('LOGS_CLEARED', { timestamp: Date.now() });
 };
-
 const getClient = (engine: TelegramEngine): any => {
   const client = (engine as any).client;
   if (!client) throw new Error('Telegram is not connected. Connect an account first.');
   return client;
 };
-
 const normalizeTelegramTimestamp = (value: any): number | null => {
   if (value === null || value === undefined || value === '') return null;
   if (value instanceof Date) return value.getTime();
@@ -28,7 +26,6 @@ const normalizeTelegramTimestamp = (value: any): number | null => {
   const parsed = Date.parse(String(value));
   return Number.isNaN(parsed) ? null : parsed;
 };
-
 const normalizeHistoryMessage = (message: any) => {
   const media = message.media;
   let mediaType: string | null = null;
@@ -143,11 +140,10 @@ async function startServer() {
   });
 
   app.get('/api/stream', (req, res) => { res.setHeader('Content-Type', 'text/event-stream; charset=utf-8'); res.setHeader('Cache-Control', 'no-cache, no-transform'); res.setHeader('Connection', 'keep-alive'); res.setHeader('X-Accel-Buffering', 'no'); res.flushHeaders(); let closed = false; const write = (chunk: string) => { if (closed || res.writableEnded) return; try { res.write(chunk); } catch { closed = true; } }; write(': stream-connected\n\n'); const unsubscribe = engine.subscribeSSE((data) => write(`data: ${JSON.stringify(data)}\n\n`)); const heartbeat = setInterval(() => { if (closed || res.writableEnded) clearInterval(heartbeat); else write(': keepalive-ping\n\n'); }, 15000); const cleanup = () => { if (closed) return; closed = true; clearInterval(heartbeat); unsubscribe(); }; req.on('close', cleanup); req.on('end', cleanup); res.on('finish', cleanup); res.on('error', cleanup); });
-  app.get('/api/python-export', (_req, res) => { const config = storage.getConfig(); const rulesStr = config.rules.filter((r) => r.enabled && r.sourceId && r.targetIds.length).map((r) => `${r.sourceId}:${r.targetIds.join(':')}`).join(','); res.json({ envContent: `# TGForwarder Pro Exported .env\nAPI_ID="${config.apiId || ''}"\nAPI_HASH="${config.apiHash || ''}"\n${config.botToken ? `BOT_TOKEN="${config.botToken}\n` : ''}FORWARDING_RULES="${rulesStr}"\nREMOVE_FORWARD_SIGNATURE="${config.defaultRemoveSignature ? 'true' : 'false'}\n`, requirements: 'telethon==1.40.0\npython-dotenv==1.1.1\n', pythonScriptNotice: 'Use python3 telegram_forwarder.py --remove-forward-signature' }); });
+  app.get('/api/python-export', (_req, res) => { const config = storage.getConfig(); const rulesStr = config.rules.filter((r) => r.enabled && r.sourceId && r.targetIds.length).map((r) => `${r.sourceId}:${r.targetIds.join(':')}`).join(','); res.json({ envContent: `# TGForwarder Pro Exported .env\nAPI_ID="${config.apiId || ''}"\nAPI_HASH="${config.apiHash || ''}"\n${config.botToken ? `BOT_TOKEN="${config.botToken}"\n` : ''}FORWARDING_RULES="${rulesStr}"\nREMOVE_FORWARD_SIGNATURE="${config.defaultRemoveSignature ? 'true' : 'false'}"\n`, requirements: 'telethon==1.40.0\npython-dotenv==1.1.1\n', pythonScriptNotice: 'Use python3 telegram_forwarder.py --remove-forward-signature' }); });
 
   if (process.env.NODE_ENV !== 'production') { const vite = await createViteServer({ server: { middlewareMode: true }, appType: 'spa' }); app.use(vite.middlewares); }
   else { const distPath = path.join(process.cwd(), 'dist'); app.use(express.static(distPath)); app.get('*', (_req, res) => res.sendFile(path.join(distPath, 'index.html'))); }
   app.listen(PORT, HOST, () => console.log(`[TGForwarder] v2 server listening on ${HOST}:${PORT}`));
 }
-
 startServer().catch((err) => { console.error('[TGForwarder] Fatal startup error:', err); process.exit(1); });
