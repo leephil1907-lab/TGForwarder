@@ -1,3 +1,5 @@
+import fs from 'fs';
+import path from 'path';
 import { StorageManager } from './server/storage.js';
 import { TelegramEngine } from './server/telegramEngine.js';
 import { TelegramClient } from 'telegram';
@@ -90,32 +92,175 @@ if (!engineProto.__tgforwarderEnrichedEngineLog) {
   engineProto.__tgforwarderEnrichedEngineLog = true;
 }
 
-if (!engineProto.__tgforwarderManualReview) {
-  const pending = new Map<string, any>();
+/**
+ * Production publish pipeline:
+ * source message -> durable pending record -> user edit/approval -> Telegram publish.
+ * Pending records contain only Telegram identifiers and text, never a serialized
+ * Telegram client/message object, so they survive Railway restarts and redeploys.
+ */
+if (!engineProto.__tgforwarderManualReviewV2) {
+  type PendingRecord = {
+    key: string;
+    sourceId: string;
+    sourceTitle: string;
+    targetId: string;
+    targetTitle: string;
+    messageId: number;
+    text: string;
+    hasMedia: boolean;
+    mediaType: string | null;
+    createdAt: number;
+  };
+
+  const dataDir = process.env.TG_DATA_DIR || path.join(process.cwd(), '.data');
+  const pendingFile = path.join(dataDir, 'pending-posts.json');
+  const pending = new Map<string, PendingRecord>();
+
+  const loadPending = () => {
+    try {
+      if (!fs.existsSync(pendingFile)) return;
+      const records = JSON.parse(fs.readFileSync(pendingFile, 'utf8'));
+      if (!Array.isArray(records)) return;
+      for (const record of records) {
+        if (record?.key && record.sourceId && record.targetId && Number(record.messageId)) pending.set(record.key, record);
+      }
+    } catch (error) {
+      console.warn('[TGForwarder] Could not restore pending posts:', (error as any)?.message || error);
+    }
+  };
+
+  const savePending = () => {
+    try {
+      fs.mkdirSync(dataDir, { recursive: true });
+      const tmp = `${pendingFile}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify(Array.from(pending.values()).slice(-1000), null, 2), 'utf8');
+      fs.renameSync(tmp, pendingFile);
+    } catch (error) {
+      throw new Error(`Unable to persist pending post state: ${(error as any)?.message || error}`);
+    }
+  };
+
+  loadPending();
+
   const originalDispatch = engineProto.dispatchItem;
-  engineProto.__tgforwarderOriginalDispatch = originalDispatch;
+  engineProto.__tgforwarderOriginalDispatchV2 = originalDispatch;
+
   engineProto.dispatchItem = async function (item: any, rateLimit: any) {
-    if (item?.__tgforwarderPublishNow) return originalDispatch.call(this, item, rateLimit);
     const message = item?.event?.message;
     const chatId = message?.chatId?.toString?.() || item?.rule?.sourceId || '';
-    const key = `${chatId}:${message?.id}:${item?.targetId}`;
-    pending.set(key, { key, sourceId: chatId, sourceTitle: item.rule?.sourceTitle || chatId, targetId: item.targetId, targetTitle: item.targetTitle || item.targetId, messageId: Number(message?.id), text: item.processedText || message?.message || message?.text || '', hasMedia: Boolean(message?.media), mediaType: message?.media?.className || null, createdAt: Date.now(), item });
-    this.log({ level: 'info', category: 'forward', title: 'Incoming Post Awaiting Approval', message: `Post #${message?.id} is waiting for publish approval.`, sourceId: chatId, sourceTitle: item.rule?.sourceTitle || chatId, targetId: item.targetId, targetTitle: item.targetTitle || item.targetId, messageSnippet: (item.processedText || '').slice(0, 80) });
+    const targetId = String(item?.targetId || '').trim();
+    if (!message || !chatId || !targetId) throw new Error('Invalid forwarding payload: source message or destination is missing.');
+
+    const key = `${chatId}:${Number(message.id)}:${targetId}`;
+    const pendingRecord: PendingRecord = {
+      key,
+      sourceId: chatId,
+      sourceTitle: item.rule?.sourceTitle || chatId,
+      targetId,
+      targetTitle: item.targetTitle || targetId,
+      messageId: Number(message.id),
+      text: item.processedText ?? message.message ?? message.text ?? '',
+      hasMedia: Boolean(message.media),
+      mediaType: message.media?.className || null,
+      createdAt: Date.now()
+    };
+
+    pending.set(key, pendingRecord);
+    savePending();
+
+    this.log({
+      level: 'info',
+      category: 'forward',
+      title: 'Post Staged for Review',
+      message: `Source post #${message.id} copied to the publish queue for ${pendingRecord.targetTitle}.`,
+      sourceId: chatId,
+      sourceTitle: pendingRecord.sourceTitle,
+      targetId,
+      targetTitle: pendingRecord.targetTitle,
+      messageSnippet: pendingRecord.text.slice(0, 80) || '[Media]'
+    });
   };
-  engineProto.getPendingPosts = function () { return Array.from(pending.values()).map(({ item, ...post }) => post); };
-  engineProto.publishPendingPost = async function (key: string, text?: string) {
-    const post = pending.get(key);
-    if (!post) throw new Error('Pending post not found or it has already been published.');
-    const item = post.item;
-    if (typeof text === 'string') item.processedText = text;
-    item.__tgforwarderPublishNow = true;
-    try { await originalDispatch.call(this, item, this.storage?.getConfig?.()?.globalRateLimit); pending.delete(key); return { success: true, key }; }
-    catch (error) { item.__tgforwarderPublishNow = false; throw error; }
+
+  engineProto.getPendingPosts = function () {
+    return Array.from(pending.values()).sort((a, b) => b.createdAt - a.createdAt);
   };
-  engineProto.discardPendingPost = function (key: string) { return { success: pending.delete(key) }; };
-  const originalDisconnect = engineProto.disconnect;
-  engineProto.disconnect = async function () { pending.clear(); return originalDisconnect.call(this); };
-  engineProto.__tgforwarderManualReview = true;
+
+  engineProto.publishPendingPost = async function (key: string, editedText?: string) {
+    if (!this.client || this.authState?.status !== 'connected') throw new Error('Telegram account is not connected.');
+    const record = pending.get(key);
+    if (!record) throw new Error('Pending post not found or it has already been published.');
+
+    // Re-resolve and re-read the real source message before every publish.
+    // This verifies that the configured source is accessible and ensures the
+    // media/caption being sent is the actual Telegram message, not UI data.
+    const sourceEntity = await this.resolveEntity(record.sourceId);
+    const sourceMessages = await this.client.getMessages(sourceEntity, { ids: [record.messageId] });
+    const sourceMessage: any = Array.isArray(sourceMessages) ? sourceMessages[0] : sourceMessages;
+    if (!sourceMessage) throw new Error(`Source message #${record.messageId} is no longer available in ${record.sourceTitle}.`);
+
+    const targetEntity = await this.resolveEntity(record.targetId);
+    if (!targetEntity) throw new Error(`Destination ${record.targetTitle} could not be resolved.`);
+
+    const rule = (this.storage?.getConfig?.()?.rules || []).find((candidate: any) => candidate.sourceId && (
+      candidate.sourceId === record.sourceId ||
+      candidate.sourceId.replace(/^-100/, '') === record.sourceId.replace(/^-100/, '')
+    ) && Array.isArray(candidate.targetIds) && candidate.targetIds.some((id: string) => id === record.targetId || id.replace(/^-100/, '') === record.targetId.replace(/^-100/, '')));
+
+    const publishRule = rule || {
+      removeForwardSignature: true,
+      preserveFormatting: false,
+      sourceId: record.sourceId,
+      sourceTitle: record.sourceTitle,
+      targetIds: [record.targetId],
+      targetTitles: [record.targetTitle]
+    };
+
+    const finalText = typeof editedText === 'string' ? editedText : record.text;
+    const syntheticEvent = { message: sourceMessage, chat: sourceEntity };
+    const item = {
+      event: syntheticEvent,
+      rule: publishRule,
+      targetId: record.targetId,
+      targetTitle: record.targetTitle,
+      processedText: finalText,
+      scheduledTime: Date.now(),
+      retries: 0,
+      __tgforwarderPublishNow: true
+    };
+
+    this.log({
+      level: 'info',
+      category: 'forward',
+      title: 'Publishing Approved Post',
+      message: `Publishing source #${record.messageId} from ${record.sourceTitle} to ${record.targetTitle}.`,
+      sourceId: record.sourceId,
+      sourceTitle: record.sourceTitle,
+      targetId: record.targetId,
+      targetTitle: record.targetTitle,
+      messageSnippet: finalText.slice(0, 80) || '[Media]'
+    });
+
+    await originalDispatch.call(this, item, this.storage?.getConfig?.()?.globalRateLimit);
+
+    // dispatchItem records a mapping only after Telegram accepts the message.
+    // Do not remove the pending record if the send failed, so the user can retry.
+    const mapping = this.storage?.getMapping?.(record.sourceId, record.messageId, record.targetId);
+    if (!mapping) {
+      throw new Error(`Telegram did not confirm delivery to ${record.targetTitle}. The post remains pending for retry.`);
+    }
+
+    pending.delete(key);
+    savePending();
+    return { success: true, key, sourceId: record.sourceId, sourceMessageId: record.messageId, targetId: record.targetId, targetMessageId: mapping.targetMsgId };
+  };
+
+  engineProto.discardPendingPost = function (key: string) {
+    const removed = pending.delete(key);
+    if (removed) savePending();
+    return { success: removed };
+  };
+
+  engineProto.__tgforwarderManualReviewV2 = true;
 }
 
 if (!engineProto.__tgforwarderClientSendResolution) {
