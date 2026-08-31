@@ -1,48 +1,22 @@
 import fs from 'fs';
 import path from 'path';
 import { TelegramEngine } from './telegramEngine.js';
-import { getTenantId } from './tenantContext.js';
 
-const proto:any = TelegramEngine.prototype as any;
-if (proto.__tgforwarderTenantIsolationPatch) throw new Error('Tenant isolation patch loaded twice.');
-
+const proto:any=TelegramEngine.prototype as any;
+if(proto.__tgforwarderTenantIsolationPatch)throw new Error('Tenant isolation patch loaded twice.');
 const BASE_DATA_DIR=process.env.TG_DATA_DIR||(process.env.VERCEL?'/tmp/tgforwarder-data':path.join(process.cwd(),'.data'));
 const stateFor=(engine:any)=>{
   if(engine.__tenantPendingState)return engine.__tenantPendingState;
-  const dir=path.join(BASE_DATA_DIR,'tenants',getTenantId());
-  const file=path.join(dir,'pending-posts.json');
+  const tenantId=String(engine.__tenantId||'default');
+  const dir=path.join(BASE_DATA_DIR,'tenants',tenantId),file=path.join(dir,'pending-posts.json');
   const pending=new Map<string,any>();
   try{if(fs.existsSync(file)){const list=JSON.parse(fs.readFileSync(file,'utf8'));if(Array.isArray(list))for(const r of list)if(r?.key&&r.sourceId&&r.targetId&&Number(r.messageId))pending.set(r.key,r);}}catch(err){console.warn('[TGForwarder] Could not restore tenant pending posts:',(err as Error).message);}
   const save=()=>{fs.mkdirSync(dir,{recursive:true});const tmp=`${file}.tmp`;fs.writeFileSync(tmp,JSON.stringify(Array.from(pending.values()).slice(-1000),null,2),'utf8');fs.renameSync(tmp,file);};
   return engine.__tenantPendingState={pending,save};
 };
-
-const baseDispatch=proto.__tgforwarderOriginalDispatchV2 || proto.dispatchItem;
-proto.dispatchItem=async function(item:any,rateLimit:any){
-  const state=stateFor(this);const message=item?.event?.message;const sourceId=message?.chatId?.toString?.()||item?.rule?.sourceId||'';const targetId=String(item?.targetId||'').trim();
-  if(!message||!sourceId||!targetId)throw new Error('Invalid forwarding payload: source message or destination is missing.');
-  const key=`${sourceId}:${Number(message.id)}:${targetId}`;
-  state.pending.set(key,{key,sourceId,sourceTitle:item.rule?.sourceTitle||sourceId,targetId,targetTitle:item.targetTitle||targetId,messageId:Number(message.id),text:item.processedText??message.message??message.text??'',hasMedia:Boolean(message.media),mediaType:message.media?.className||null,createdAt:Date.now()});
-  state.save();
-  this.log?.({level:'info',category:'forward',title:'Post Staged for Review',message:`Source post #${message.id} copied to the publish queue for ${item.targetTitle||targetId}.`,sourceId,sourceTitle:item.rule?.sourceTitle||sourceId,targetId,targetTitle:item.targetTitle||targetId,messageSnippet:String(item.processedText??message.message??message.text??'').slice(0,80)||'[Media]'});
-};
-
+const baseDispatch=proto.__tgforwarderOriginalDispatchV2||proto.dispatchItem;
+proto.dispatchItem=async function(item:any,rateLimit:any){const state=stateFor(this),message=item?.event?.message,sourceId=message?.chatId?.toString?.()||item?.rule?.sourceId||'',targetId=String(item?.targetId||'').trim();if(!message||!sourceId||!targetId)throw new Error('Invalid forwarding payload: source message or destination is missing.');const key=`${sourceId}:${Number(message.id)}:${targetId}`;state.pending.set(key,{key,sourceId,sourceTitle:item.rule?.sourceTitle||sourceId,targetId,targetTitle:item.targetTitle||targetId,messageId:Number(message.id),text:item.processedText??message.message??message.text??'',hasMedia:Boolean(message.media),mediaType:message.media?.className||null,createdAt:Date.now()});state.save();this.log?.({level:'info',category:'forward',title:'Post Staged for Review',message:`Source post #${message.id} copied to the publish queue for ${item.targetTitle||targetId}.`,sourceId,sourceTitle:item.rule?.sourceTitle||sourceId,targetId,targetTitle:item.targetTitle||targetId,messageSnippet:String(item.processedText??message.message??message.text??'').slice(0,80)||'[Media]'});};
 proto.getPendingPosts=function(){return Array.from(stateFor(this).pending.values()).sort((a:any,b:any)=>b.createdAt-a.createdAt);};
-
-proto.publishPendingPost=async function(key:string,editedText?:string){
-  if(!this.client||this.authState?.status!=='connected')throw new Error('Telegram account is not connected.');
-  const state=stateFor(this);const record=state.pending.get(key);if(!record)throw new Error('Pending post not found or it has already been published.');
-  const sourceEntity=await this.resolveEntity(record.sourceId);const sourceMessages=await this.client.getMessages(sourceEntity,{ids:[record.messageId]});const sourceMessage=Array.isArray(sourceMessages)?sourceMessages[0]:sourceMessages;if(!sourceMessage)throw new Error(`Source message #${record.messageId} is no longer available in ${record.sourceTitle}.`);
-  const targetEntity=await this.resolveEntity(record.targetId);if(!targetEntity)throw new Error(`Destination ${record.targetTitle} could not be resolved.`);
-  const rule=(this.storage?.getConfig?.()?.rules||[]).find((candidate:any)=>candidate.sourceId&&((candidate.sourceId===record.sourceId)||(candidate.sourceId.replace(/^-100/,'')===record.sourceId.replace(/^-100/,'')))&&Array.isArray(candidate.targetIds)&&candidate.targetIds.some((id:string)=>id===record.targetId||id.replace(/^-100/,'')===record.targetId.replace(/^-100/,'')));
-  const publishRule=rule||{removeForwardSignature:true,preserveFormatting:false,sourceId:record.sourceId,sourceTitle:record.sourceTitle,targetIds:[record.targetId],targetTitles:[record.targetTitle]};
-  const finalText=typeof editedText==='string'?editedText:record.text;
-  const item={event:{message:sourceMessage,chat:sourceEntity},rule:publishRule,targetId:record.targetId,targetTitle:record.targetTitle,processedText:finalText,scheduledTime:Date.now(),retries:0,__tgforwarderPublishNow:true};
-  this.log?.({level:'info',category:'forward',title:'Publishing Approved Post',message:`Publishing source #${record.messageId} from ${record.sourceTitle} to ${record.targetTitle}.`,sourceId:record.sourceId,sourceTitle:record.sourceTitle,targetId:record.targetId,targetTitle:record.targetTitle,messageSnippet:finalText.slice(0,80)||'[Media]'});
-  await baseDispatch.call(this,item,this.storage?.getConfig?.()?.globalRateLimit);
-  const mapping=this.storage?.getMapping?.(record.sourceId,record.messageId,record.targetId);if(!mapping)throw new Error(`Telegram did not confirm delivery to ${record.targetTitle}. The post remains pending for retry.`);
-  state.pending.delete(key);state.save();return{success:true,key,sourceId:record.sourceId,sourceMessageId:record.messageId,targetId:record.targetId,targetMessageId:mapping.targetMsgId};
-};
-
-proto.discardPendingPost=function(key:string){const state=stateFor(this);const removed=state.pending.delete(key);if(removed)state.save();return{success:removed};};
+proto.publishPendingPost=async function(key:string,editedText?:string){if(!this.client||this.authState?.status!=='connected')throw new Error('Telegram account is not connected.');const state=stateFor(this),record=state.pending.get(key);if(!record)throw new Error('Pending post not found or it has already been published.');const sourceEntity=await this.resolveEntity(record.sourceId),sourceMessages=await this.client.getMessages(sourceEntity,{ids:[record.messageId]}),sourceMessage=Array.isArray(sourceMessages)?sourceMessages[0]:sourceMessages;if(!sourceMessage)throw new Error(`Source message #${record.messageId} is no longer available in ${record.sourceTitle}.`);const targetEntity=await this.resolveEntity(record.targetId);if(!targetEntity)throw new Error(`Destination ${record.targetTitle} could not be resolved.`);const rule=(this.storage?.getConfig?.()?.rules||[]).find((candidate:any)=>candidate.sourceId&&((candidate.sourceId===record.sourceId)||(candidate.sourceId.replace(/^-100/,'')===record.sourceId.replace(/^-100/,'')))&&Array.isArray(candidate.targetIds)&&candidate.targetIds.some((id:string)=>id===record.targetId||id.replace(/^-100/,'')===record.targetId.replace(/^-100/,'')));const publishRule=rule||{removeForwardSignature:true,preserveFormatting:false,sourceId:record.sourceId,sourceTitle:record.sourceTitle,targetIds:[record.targetId],targetTitles:[record.targetTitle]};const finalText=typeof editedText==='string'?editedText:record.text;const item={event:{message:sourceMessage,chat:sourceEntity},rule:publishRule,targetId:record.targetId,targetTitle:record.targetTitle,processedText:finalText,scheduledTime:Date.now(),retries:0,__tgforwarderPublishNow:true};this.log?.({level:'info',category:'forward',title:'Publishing Approved Post',message:`Publishing source #${record.messageId} from ${record.sourceTitle} to ${record.targetTitle}.`,sourceId:record.sourceId,sourceTitle:record.sourceTitle,targetId:record.targetId,targetTitle:record.targetTitle,messageSnippet:finalText.slice(0,80)||'[Media]'});await baseDispatch.call(this,item,this.storage?.getConfig?.()?.globalRateLimit);const mapping=this.storage?.getMapping?.(record.sourceId,record.messageId,record.targetId);if(!mapping)throw new Error(`Telegram did not confirm delivery to ${record.targetTitle}. The post remains pending for retry.`);state.pending.delete(key);state.save();return{success:true,key,sourceId:record.sourceId,sourceMessageId:record.messageId,targetId:record.targetId,targetMessageId:mapping.targetMsgId};};
+proto.discardPendingPost=function(key:string){const state=stateFor(this),removed=state.pending.delete(key);if(removed)state.save();return{success:removed};};
 proto.__tgforwarderTenantIsolationPatch=true;
