@@ -9,12 +9,7 @@ const originalGetConfig = storageProto.getConfig;
 if (!storageProto.__tgforwarderStrictSourceRouting) {
   storageProto.getConfig = function () {
     const config = originalGetConfig.call(this);
-    return {
-      ...config,
-      rules: Array.isArray(config.rules)
-        ? config.rules.map((rule: any) => ({ ...rule, sourceUsername: undefined }))
-        : []
-    };
+    return { ...config, rules: Array.isArray(config.rules) ? config.rules.map((rule: any) => ({ ...rule, sourceUsername: undefined })) : [] };
   };
   storageProto.__tgforwarderStrictSourceRouting = true;
 }
@@ -61,21 +56,18 @@ if (!engineProto.__tgforwarderAllDialogs) {
 
   engineProto.__tgforwarderOriginalResolveEntity = engineProto.resolveEntity;
   engineProto.resolveEntity = async function (idOrUsername: string | number) {
-    try {
-      return await this.__tgforwarderOriginalResolveEntity(idOrUsername);
-    } catch (error) {
+    try { return await this.__tgforwarderOriginalResolveEntity(idOrUsername); }
+    catch (error) {
       if (!this.client) throw error;
       const raw = String(idOrUsername).trim();
       const normalized = raw.replace(/^-100/, '').replace(/^-/, '');
       const dialogs = (this.client as any).iterDialogs ? (this.client as any).iterDialogs({}) : null;
-      if (dialogs) {
-        for await (const dialog of dialogs) {
-          if (!dialog?.entity) continue;
-          const id = dialog.id?.toString?.() || dialog.entity.id?.toString?.() || '';
-          this.cacheEntity?.(dialog.entity, id);
-          const candidates = [id, id.replace(/^-100/, ''), `-100${id.replace(/^-100/, '')}`];
-          if (candidates.includes(raw) || candidates.includes(normalized) || candidates.includes(`-100${normalized}`)) return dialog.entity;
-        }
+      if (dialogs) for await (const dialog of dialogs) {
+        if (!dialog?.entity) continue;
+        const id = dialog.id?.toString?.() || dialog.entity.id?.toString?.() || '';
+        this.cacheEntity?.(dialog.entity, id);
+        const candidates = [id, id.replace(/^-100/, ''), `-100${id.replace(/^-100/, '')}`];
+        if (candidates.includes(raw) || candidates.includes(normalized) || candidates.includes(`-100${normalized}`)) return dialog.entity;
       }
       throw error;
     }
@@ -91,9 +83,7 @@ if (!engineProto.__tgforwarderEnrichedEngineLog) {
     if (logItem?.title === 'Forwarding Engine Active' && !logItem.sourceId) {
       const rules = this.storage?.getConfig?.()?.rules || [];
       const active = rules.find((r: any) => r.enabled && r.sourceId && Array.isArray(r.targetIds) && r.targetIds.length);
-      if (active) {
-        logItem = { ...logItem, sourceId: active.sourceId, sourceTitle: active.sourceTitle || active.sourceId, targetId: active.targetIds[0], targetTitle: active.targetTitles?.[0] || active.targetIds[0], message: `${logItem.message} Source ${active.sourceId} → Target ${active.targetIds[0]}.` };
-      }
+      if (active) logItem = { ...logItem, sourceId: active.sourceId, sourceTitle: active.sourceTitle || active.sourceId, targetId: active.targetIds[0], targetTitle: active.targetTitles?.[0] || active.targetIds[0], message: `${logItem.message} Source ${active.sourceId} → Target ${active.targetIds[0]}.` };
     }
     return originalLog.call(this, logItem);
   };
@@ -104,28 +94,14 @@ if (!engineProto.__tgforwarderManualReview) {
   const pending = new Map<string, any>();
   const originalDispatch = engineProto.dispatchItem;
   engineProto.__tgforwarderOriginalDispatch = originalDispatch;
-
   engineProto.dispatchItem = async function (item: any, rateLimit: any) {
     if (item?.__tgforwarderPublishNow) return originalDispatch.call(this, item, rateLimit);
     const message = item?.event?.message;
     const chatId = message?.chatId?.toString?.() || item?.rule?.sourceId || '';
     const key = `${chatId}:${message?.id}:${item?.targetId}`;
-    pending.set(key, {
-      key,
-      sourceId: chatId,
-      sourceTitle: item.rule?.sourceTitle || chatId,
-      targetId: item.targetId,
-      targetTitle: item.targetTitle || item.targetId,
-      messageId: Number(message?.id),
-      text: item.processedText || message?.message || message?.text || '',
-      hasMedia: Boolean(message?.media),
-      mediaType: message?.media?.className || null,
-      createdAt: Date.now(),
-      item
-    });
+    pending.set(key, { key, sourceId: chatId, sourceTitle: item.rule?.sourceTitle || chatId, targetId: item.targetId, targetTitle: item.targetTitle || item.targetId, messageId: Number(message?.id), text: item.processedText || message?.message || message?.text || '', hasMedia: Boolean(message?.media), mediaType: message?.media?.className || null, createdAt: Date.now(), item });
     this.log({ level: 'info', category: 'forward', title: 'Incoming Post Awaiting Approval', message: `Post #${message?.id} is waiting for publish approval.`, sourceId: chatId, sourceTitle: item.rule?.sourceTitle || chatId, targetId: item.targetId, targetTitle: item.targetTitle || item.targetId, messageSnippet: (item.processedText || '').slice(0, 80) });
   };
-
   engineProto.getPendingPosts = function () { return Array.from(pending.values()).map(({ item, ...post }) => post); };
   engineProto.publishPendingPost = async function (key: string, text?: string) {
     const post = pending.get(key);
@@ -133,14 +109,8 @@ if (!engineProto.__tgforwarderManualReview) {
     const item = post.item;
     if (typeof text === 'string') item.processedText = text;
     item.__tgforwarderPublishNow = true;
-    try {
-      await originalDispatch.call(this, item, this.storage?.getConfig?.()?.globalRateLimit);
-      pending.delete(key);
-      return { success: true, key };
-    } catch (error) {
-      item.__tgforwarderPublishNow = false;
-      throw error;
-    }
+    try { await originalDispatch.call(this, item, this.storage?.getConfig?.()?.globalRateLimit); pending.delete(key); return { success: true, key }; }
+    catch (error) { item.__tgforwarderPublishNow = false; throw error; }
   };
   engineProto.discardPendingPost = function (key: string) { return { success: pending.delete(key) }; };
   const originalDisconnect = engineProto.disconnect;
@@ -172,4 +142,4 @@ if (!engineProto.__tgforwarderClientSendResolution) {
   engineProto.__tgforwarderClientSendResolution = true;
 }
 
-await import('./server.ts');
+await import('./production-server.ts');
