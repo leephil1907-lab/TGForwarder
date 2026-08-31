@@ -1,12 +1,16 @@
 {
   "name": "tgforwarder",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
   "type": "module",
   "engines": {"node": ">=22 <23", "npm": ">=10"},
-  "scripts": {"dev": "tsx strict-entry.ts", "build": "vite build", "start": "tsx strict-entry.ts", "lint": "tsc --noEmit"},
+  "scripts": {
+    "dev": "NODE_ENV=development tsx production-entry.ts",
+    "build": "vite build",
+    "start": "NODE_ENV=production tsx production-entry.ts",
+    "lint": "tsc --noEmit"
+  },
   "dependencies": {
-    "@google/genai": "^2.4.0",
     "@tailwindcss/vite": "^4.1.14",
     "@vitejs/plugin-react": "^5.0.4",
     "dotenv": "^17.2.3",
