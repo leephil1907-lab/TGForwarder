@@ -5,3 +5,5 @@ import './server/productionEnhancements.js';
 import './production-entry.ts';
 // Replace the legacy shared pending queue with the tenant-isolated implementation.
 import './server/tenantIsolationPatch.js';
+// Install the authenticated-user private-source listener at production startup.
+import './server/privateSourceAutoForward.js';
