@@ -1,140 +1,47 @@
-import React, { useState } from 'react';
-import { History, RefreshCw, Send, X, Edit3, Image, CheckCircle2, AlertCircle, ChevronDown, Video, FileText, Eye, Forward, MessageCircle } from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { History, RefreshCw, Send, X, Edit3, Image, CheckCircle2, AlertCircle, ChevronDown, FileText, Eye, Forward, MessageCircle, Loader2 } from 'lucide-react';
 import { DiscoveredChat, AuthState } from '../types';
 
 interface Props { chats: DiscoveredChat[]; authState: AuthState; }
-type Msg = {
-  id:number;
-  date:number|null;
-  text:string;
-  mediaType:string|null;
-  hasMedia:boolean;
-  mediaUrl:string|null;
-  mimeType?:string|null;
-  fileName?:string|null;
-  size?:number|null;
-  duration?:number|null;
-  width?:number|null;
-  height?:number|null;
-  views:number|null;
-  forwards:number|null;
-  replies?:number|null;
-  senderId?:string|null;
-  groupedId?:string|null;
-};
-
-const formatBytes = (bytes?: number|null) => {
-  if (!bytes || bytes <= 0) return '';
-  const units = ['B','KB','MB','GB'];
-  const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
-  return `${(bytes / Math.pow(1024, index)).toFixed(index ? 1 : 0)} ${units[index]}`;
-};
-
-const formatDuration = (seconds?: number|null) => {
-  if (!seconds || seconds <= 0) return '';
-  const total = Math.round(seconds);
-  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
-};
+type Msg = { id:number; date:number|null; text:string; mediaType:string|null; hasMedia:boolean; mediaUrl:string|null; mimeType?:string|null; fileName?:string|null; size?:number|null; duration?:number|null; width?:number|null; height?:number|null; views:number|null; forwards:number|null; replies?:number|null; senderId?:string|null; groupedId?:string|null; };
+const STORAGE_KEY = 'tgforwarder.history.source.v2';
+const formatBytes=(bytes?:number|null)=>{if(!bytes||bytes<=0)return '';const u=['B','KB','MB','GB'];const i=Math.min(Math.floor(Math.log(bytes)/Math.log(1024)),u.length-1);return `${(bytes/Math.pow(1024,i)).toFixed(i?1:0)} ${u[i]}`;};
+const formatDuration=(seconds?:number|null)=>{if(!seconds||seconds<=0)return '';const t=Math.round(seconds);return `${Math.floor(t/60)}:${String(t%60).padStart(2,'0')}`;};
+const SkeletonCard=()=> <div className="p-4 rounded-xl bg-slate-900 border border-slate-800 animate-pulse"><div className="flex gap-4"><div className="flex-1 space-y-3"><div className="h-3 w-48 rounded bg-slate-800"/><div className="aspect-video max-w-2xl rounded-xl bg-slate-800"/><div className="h-4 w-3/4 rounded bg-slate-800"/><div className="h-3 w-1/2 rounded bg-slate-800"/></div><div className="w-24 h-9 rounded-lg bg-slate-800"/></div></div>;
 
 export const PostHistory: React.FC<Props> = ({ chats, authState }) => {
-  const [sourceId, setSourceId] = useState('');
-  const [messages, setMessages] = useState<Msg[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [loadingMore, setLoadingMore] = useState(false);
-  const [selected, setSelected] = useState<Msg | null>(null);
-  const [editedText, setEditedText] = useState('');
-  const [targetIds, setTargetIds] = useState<string[]>([]);
-  const [publishing, setPublishing] = useState(false);
-  const [notice, setNotice] = useState<{ok:boolean;text:string}|null>(null);
-  const [nextOffsetId, setNextOffsetId] = useState<number|null>(null);
-  const [hasMore, setHasMore] = useState(false);
+  const sourceChats=useMemo(()=>chats.filter(c=>c.type==='channel'||c.type==='group'||c.type==='supergroup'),[chats]);
+  const [sourceId,setSourceId]=useState(''); const [messages,setMessages]=useState<Msg[]>([]); const [loading,setLoading]=useState(false); const [loadingMore,setLoadingMore]=useState(false); const [selected,setSelected]=useState<Msg|null>(null); const [editedText,setEditedText]=useState(''); const [targetIds,setTargetIds]=useState<string[]>([]); const [publishing,setPublishing]=useState(false); const [notice,setNotice]=useState<{ok:boolean;text:string}|null>(null); const [nextOffsetId,setNextOffsetId]=useState<number|null>(null); const [hasMore,setHasMore]=useState(false); const [hydrated,setHydrated]=useState(false);
 
-  const sourceChats = chats.filter(c => c.type === 'channel' || c.type === 'group' || c.type === 'supergroup');
+  useEffect(()=>{try{const saved=localStorage.getItem(STORAGE_KEY);if(saved){const parsed=JSON.parse(saved);if(typeof parsed==='string')setSourceId(parsed);else if(parsed?.sourceId)setSourceId(String(parsed.sourceId));}}catch{}finally{setHydrated(true);}},[]);
+  useEffect(()=>{if(hydrated&&sourceId){try{localStorage.setItem(STORAGE_KEY,JSON.stringify({sourceId, savedAt:Date.now()}));}catch{} if(authState.status==='connected') loadHistory(false);}},[hydrated]);
+  useEffect(()=>{if(!sourceId)return;try{localStorage.setItem(STORAGE_KEY,JSON.stringify({sourceId,savedAt:Date.now()}));}catch{}},[sourceId]);
+  useEffect(()=>{if(sourceId&&!sourceChats.some(c=>c.id===sourceId)){setSourceId('');setMessages([]);setNextOffsetId(null);setHasMore(false);}},[sourceChats,sourceId]);
 
-  const loadHistory = async (append = false) => {
-    if (!sourceId) return;
-    append ? setLoadingMore(true) : setLoading(true);
-    setNotice(null);
-    try {
-      const offset = append && nextOffsetId ? `&offsetId=${nextOffsetId}` : '';
-      const res = await fetch(`/api/history?sourceId=${encodeURIComponent(sourceId)}&limit=100${offset}`);
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to load Telegram history');
-      setMessages(prev => append ? [...prev, ...(data.messages || [])] : (data.messages || []));
-      setNextOffsetId(data.nextOffsetId ?? null);
-      setHasMore(Boolean(data.hasMore));
-    } catch (e:any) { setNotice({ok:false,text:e.message || 'Unable to load Telegram history.'}); }
-    finally { append ? setLoadingMore(false) : setLoading(false); }
-  };
+  const loadHistory=async(append=false)=>{if(!sourceId)return;append?setLoadingMore(true):setLoading(true);setNotice(null);try{const offset=append&&nextOffsetId?`&offsetId=${nextOffsetId}`:'';const res=await fetch(`/api/history?sourceId=${encodeURIComponent(sourceId)}&limit=100${offset}`,{credentials:'include',cache:'no-store'});const data=await res.json();if(!res.ok)throw new Error(data.error||'Failed to load Telegram history');setMessages(prev=>append?[...prev,...(data.messages||[])]:data.messages||[]);setNextOffsetId(data.nextOffsetId??null);setHasMore(Boolean(data.hasMore));}catch(e:any){setNotice({ok:false,text:e.message||'Unable to load Telegram history.'});}finally{append?setLoadingMore(false):setLoading(false);}};
+  const openEditor=(msg:Msg)=>{setSelected(msg);setEditedText(msg.text||'');setTargetIds([]);setNotice(null);};
+  const toggleTarget=(id:string)=>setTargetIds(v=>v.includes(id)?v.filter(x=>x!==id):[...v,id]);
+  const publish=async()=>{if(!selected||!targetIds.length)return;setPublishing(true);setNotice(null);try{const res=await fetch('/api/history/forward',{method:'POST',credentials:'include',headers:{'Content-Type':'application/json'},body:JSON.stringify({sourceId,messageId:selected.id,targetIds,text:editedText})});const data=await res.json();if(!res.ok)throw new Error(data.error||'Telegram publish failed');const failed=(data.results||[]).filter((r:any)=>!r.success).length;setNotice({ok:failed===0,text:failed===0?`Published message #${selected.id} successfully.`:`Published with ${failed} destination failure(s).`});if(failed===0)setSelected(null);}catch(e:any){setNotice({ok:false,text:e.message||'Telegram publish failed.'});}finally{setPublishing(false);}};
 
-  const openEditor = (msg: Msg) => { setSelected(msg); setEditedText(msg.text || ''); setTargetIds([]); setNotice(null); };
-  const toggleTarget = (id:string) => setTargetIds(v => v.includes(id) ? v.filter(x=>x!==id) : [...v,id]);
-
-  const publish = async () => {
-    if (!selected || !targetIds.length) return;
-    setPublishing(true); setNotice(null);
-    try {
-      const res = await fetch('/api/history/forward', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ sourceId, messageId:selected.id, targetIds, text:editedText }) });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Telegram publish failed');
-      const failed = (data.results || []).filter((r:any)=>!r.success).length;
-      setNotice({ok: failed===0, text: failed===0 ? `Published message #${selected.id} successfully.` : `Published with ${failed} destination failure(s).`});
-      if (failed===0) setSelected(null);
-    } catch(e:any) { setNotice({ok:false,text:e.message || 'Telegram publish failed.'}); }
-    finally { setPublishing(false); }
-  };
-
-  if (authState.status !== 'connected') return <div className="p-8 rounded-2xl bg-slate-900 border border-slate-800 text-center text-slate-400">Connect Telegram to retrieve real source-channel history.</div>;
-
-  return <div className="space-y-5">
-    <div className="p-5 rounded-2xl bg-slate-900 border border-slate-800 shadow-xl">
-      <div className="flex flex-col lg:flex-row lg:items-end gap-3">
-        <div className="flex-1"><div className="flex items-center gap-2 mb-2"><History className="w-5 h-5 text-cyan-400"/><h2 className="text-lg font-bold text-white">Source Post History</h2></div><p className="text-xs text-slate-400">Live history from the connected Telegram account. Media, captions, timestamps and Telegram counters come from the source message itself.</p></div>
-        <select value={sourceId} onChange={e=>{setSourceId(e.target.value);setMessages([]);setNextOffsetId(null);setHasMore(false);setNotice(null);}} className="px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white min-w-[260px]">
-          <option value="">Select verified source</option>{sourceChats.map(c=><option key={c.id} value={c.id}>{c.title} ({c.id})</option>)}
-        </select>
-        <button onClick={()=>loadHistory(false)} disabled={!sourceId||loading} className="px-4 py-2 rounded-xl bg-cyan-600 hover:bg-cyan-500 disabled:opacity-50 text-white text-xs font-bold flex items-center gap-2"><RefreshCw className={`w-3.5 h-3.5 ${loading?'animate-spin':''}`}/>{loading?'Loading…':'Refresh History'}</button>
+  if(authState.status!=='connected')return <div className="p-6 sm:p-8 rounded-2xl bg-slate-900 border border-slate-800 text-center text-slate-400">Connect Telegram to retrieve real source-channel history.</div>;
+  const currentSource=sourceChats.find(c=>c.id===sourceId);
+  return <div className="space-y-4 sm:space-y-5">
+    <div className="p-4 sm:p-5 rounded-2xl bg-slate-900 border border-slate-800 shadow-xl">
+      <div className="flex flex-col xl:flex-row xl:items-end gap-3">
+        <div className="flex-1 min-w-0"><div className="flex items-center gap-2 mb-2"><History className="w-5 h-5 text-cyan-400 shrink-0"/><h2 className="text-lg font-bold text-white">Source Post History</h2></div><p className="text-xs text-slate-400">Real history from the connected Telegram account. Your last verified source is remembered on this device.</p></div>
+        <div className="w-full xl:w-auto xl:min-w-[280px]"><label className="block text-[10px] uppercase tracking-wide text-slate-500 mb-1">Source channel</label><select value={sourceId} onChange={e=>{setSourceId(e.target.value);setMessages([]);setNextOffsetId(null);setHasMore(false);setNotice(null);}} className="w-full px-3 py-2.5 bg-slate-950 border border-slate-800 rounded-xl text-xs text-white"><option value="">Select verified source</option>{sourceChats.map(c=><option key={c.id} value={c.id}>{c.title} ({c.id})</option>)}</select></div>
+        <button onClick={()=>loadHistory(false)} disabled={!sourceId||loading} className="w-full xl:w-auto px-4 py-2.5 rounded-xl bg-cyan-600 hover:bg-cyan-500 disabled:opacity-50 text-white text-xs font-bold flex items-center justify-center gap-2"><RefreshCw className={`w-3.5 h-3.5 ${loading?'animate-spin':''}`}/>{loading?'Loading…':'Refresh History'}</button>
       </div>
+      {currentSource&&<div className="mt-3 flex flex-wrap items-center gap-2 text-[10px] text-slate-500"><span className="px-2 py-1 rounded-md bg-cyan-950/40 text-cyan-300">Verified source: {currentSource.title}</span><span className="px-2 py-1 rounded-md bg-slate-800">{currentSource.id}</span><span className="px-2 py-1 rounded-md bg-slate-800">Account-bound</span></div>}
     </div>
-
-    {notice && <div className={`p-3 rounded-xl border text-xs flex gap-2 ${notice.ok?'bg-emerald-950/40 border-emerald-800 text-emerald-300':'bg-rose-950/40 border-rose-800 text-rose-300'}`}>{notice.ok?<CheckCircle2 className="w-4 h-4"/>:<AlertCircle className="w-4 h-4"/>}{notice.text}</div>}
-
+    {notice&&<div className={`p-3 rounded-xl border text-xs flex gap-2 ${notice.ok?'bg-emerald-950/40 border-emerald-800 text-emerald-300':'bg-rose-950/40 border-rose-800 text-rose-300'}`}>{notice.ok?<CheckCircle2 className="w-4 h-4"/>:<AlertCircle className="w-4 h-4"/>}{notice.text}</div>}
     <div className="space-y-3">
-      {messages.map(msg=><div key={msg.id} className="p-4 rounded-xl bg-slate-900 border border-slate-800 space-y-3">
-        <div className="flex gap-4">
-          <div className="flex-1 min-w-0">
-            <div className="flex flex-wrap items-center gap-2 text-[10px] text-slate-500 mb-2">
-              <span>#{msg.id}</span>
-              {msg.date&&<span>{new Date(msg.date).toLocaleString()}</span>}
-              {msg.mediaType&&<span className="text-cyan-400 uppercase">{msg.mediaType}</span>}
-              {msg.senderId&&<span>sender {msg.senderId}</span>}
-              {msg.views!==null&&msg.views!==undefined&&<span className="flex items-center gap-1"><Eye className="w-3 h-3"/>{msg.views}</span>}
-              {msg.forwards!==null&&msg.forwards!==undefined&&<span className="flex items-center gap-1"><Forward className="w-3 h-3"/>{msg.forwards}</span>}
-              {msg.replies!==null&&msg.replies!==undefined&&<span className="flex items-center gap-1"><MessageCircle className="w-3 h-3"/>{msg.replies}</span>}
-            </div>
-            {msg.mediaUrl && msg.mediaType === 'video' && <video src={msg.mediaUrl} controls preload="metadata" className="w-full max-h-[420px] rounded-xl bg-black border border-slate-800 mb-3" />}
-            {msg.mediaUrl && msg.mediaType === 'photo' && <img src={msg.mediaUrl} loading="lazy" alt="Telegram media" className="w-full max-h-[420px] object-contain rounded-xl bg-black border border-slate-800 mb-3" />}
-            {msg.mediaUrl && !['video','photo'].includes(msg.mediaType || '') && <div className="mb-3 p-3 rounded-xl bg-slate-950 border border-slate-800 flex items-center gap-3"><FileText className="w-5 h-5 text-cyan-400"/><div className="min-w-0"><div className="text-xs text-slate-200 truncate">{msg.fileName || msg.mediaType || 'Telegram media'}</div><div className="text-[10px] text-slate-500">{msg.mimeType || 'media'} {formatBytes(msg.size) && `• ${formatBytes(msg.size)}`}</div></div><a href={msg.mediaUrl} target="_blank" rel="noreferrer" className="ml-auto text-xs text-cyan-300">Open</a></div>}
-            <p className="text-sm text-slate-200 whitespace-pre-wrap break-words">{msg.text || '(media-only post)'}</p>
-            {(msg.duration || msg.width || msg.height || msg.size) && <div className="mt-2 flex flex-wrap gap-2 text-[10px] text-slate-500"><span>{formatDuration(msg.duration)}</span><span>{msg.width&&msg.height?`${msg.width}×${msg.height}`:''}</span><span>{formatBytes(msg.size)}</span></div>}
-          </div>
-          <button onClick={()=>openEditor(msg)} className="self-start px-3 py-2 rounded-lg bg-cyan-600/20 border border-cyan-700 text-cyan-300 text-xs font-semibold flex items-center gap-1.5 shrink-0"><Edit3 className="w-3.5 h-3.5"/>Edit & Publish</button>
-        </div>
-      </div>)}
-      {!loading && sourceId && messages.length===0 && <div className="p-10 text-center text-xs text-slate-500">Telegram returned no messages for this source.</div>}
-      {hasMore && <div className="flex justify-center pt-3"><button onClick={()=>loadHistory(true)} disabled={loadingMore} className="px-5 py-2 rounded-xl bg-slate-900 border border-slate-700 text-slate-200 text-xs font-bold flex items-center gap-2 hover:border-cyan-700"><ChevronDown className="w-4 h-4"/>{loadingMore?'Loading older posts…':'Load Older Posts'}</button></div>}
+      {loading ? Array.from({length:3},(_,i)=><SkeletonCard key={`s-${i}`}/>) : messages.map(msg=><div key={msg.id} className="p-3 sm:p-4 rounded-xl bg-slate-900 border border-slate-800 space-y-3"><div className="flex flex-col lg:flex-row gap-4"><div className="flex-1 min-w-0"><div className="flex flex-wrap items-center gap-2 text-[10px] text-slate-500 mb-2"><span>#{msg.id}</span>{msg.date&&<span>{new Date(msg.date).toLocaleString()}</span>}{msg.mediaType&&<span className="text-cyan-400 uppercase">{msg.mediaType}</span>}{msg.senderId&&<span>sender {msg.senderId}</span>}{msg.views!=null&&<span className="flex items-center gap-1"><Eye className="w-3 h-3"/>{msg.views}</span>}{msg.forwards!=null&&<span className="flex items-center gap-1"><Forward className="w-3 h-3"/>{msg.forwards}</span>}{msg.replies!=null&&<span className="flex items-center gap-1"><MessageCircle className="w-3 h-3"/>{msg.replies}</span>}</div>
+        {msg.mediaUrl&&msg.mediaType==='video'&&<video src={msg.mediaUrl} controls preload="metadata" className="w-full max-h-[420px] rounded-xl bg-black border border-slate-800 mb-3"/>}{msg.mediaUrl&&msg.mediaType==='photo'&&<img src={msg.mediaUrl} loading="lazy" alt="Telegram media" className="w-full max-h-[420px] object-contain rounded-xl bg-black border border-slate-800 mb-3"/>}{msg.mediaUrl&&!['video','photo'].includes(msg.mediaType||'')&&<div className="mb-3 p-3 rounded-xl bg-slate-950 border border-slate-800 flex items-center gap-3"><FileText className="w-5 h-5 text-cyan-400 shrink-0"/><div className="min-w-0"><div className="text-xs text-slate-200 truncate">{msg.fileName||msg.mediaType||'Telegram media'}</div><div className="text-[10px] text-slate-500">{msg.mimeType||'media'} {formatBytes(msg.size)&&`• ${formatBytes(msg.size)}`}</div></div><a href={msg.mediaUrl} target="_blank" rel="noreferrer" className="ml-auto text-xs text-cyan-300 shrink-0">Open</a></div>}
+        <p className="text-sm text-slate-200 whitespace-pre-wrap break-words">{msg.text||'(media-only post)'}</p>{(msg.duration||msg.width||msg.height||msg.size)&&<div className="flex flex-wrap gap-2 text-[10px] text-slate-500"><span>{formatDuration(msg.duration)}</span><span>{msg.width&&msg.height?`${msg.width}×${msg.height}`:''}</span><span>{formatBytes(msg.size)}</span></div>}</div><button onClick={()=>openEditor(msg)} className="w-full lg:w-auto self-start px-3 py-2 rounded-lg bg-cyan-600/20 border border-cyan-700 text-cyan-300 text-xs font-semibold flex items-center justify-center gap-1.5 shrink-0"><Edit3 className="w-3.5 h-3.5"/>Edit & Publish</button></div></div>)}
+      {!loading&&sourceId&&messages.length===0&&<div className="p-10 text-center text-xs text-slate-500">Telegram returned no messages for this source.</div>}
+      {hasMore&&<div className="flex justify-center pt-2"><button onClick={()=>loadHistory(true)} disabled={loadingMore} className="px-5 py-2 rounded-xl bg-slate-900 border border-slate-700 text-slate-200 text-xs font-bold flex items-center gap-2">{loadingMore?<Loader2 className="w-4 h-4 animate-spin"/>:<ChevronDown className="w-4 h-4"/>}{loadingMore?'Loading older posts…':'Load Older Posts'}</button></div>}
     </div>
-
-    {selected && <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
-      <div className="w-full max-w-3xl max-h-[90vh] overflow-auto rounded-2xl bg-slate-900 border border-slate-700 shadow-2xl p-5 space-y-4">
-        <div className="flex items-center justify-between"><div><h3 className="text-base font-bold text-white">Edit Post #{selected.id}</h3><p className="text-xs text-slate-400">The source message will be re-read from Telegram when you publish. Media is preserved.</p></div><button onClick={()=>setSelected(null)} className="p-2 text-slate-400 hover:text-white"><X className="w-5 h-5"/></button></div>
-        {selected.mediaUrl && selected.mediaType === 'video' && <video src={selected.mediaUrl} controls className="w-full max-h-[360px] rounded-xl bg-black" />}
-        {selected.mediaUrl && selected.mediaType === 'photo' && <img src={selected.mediaUrl} alt="Telegram media" className="w-full max-h-[360px] object-contain rounded-xl bg-black" />}
-        <div className="p-3 rounded-xl bg-slate-950 border border-slate-800"><div className="text-[10px] text-slate-500 mb-2">LIVE SOURCE MESSAGE</div><p className="text-sm text-slate-300 whitespace-pre-wrap">{selected.text || '(media-only post)'}</p>{selected.mediaType&&<div className="mt-2 text-xs text-cyan-400 flex items-center gap-1"><Image className="w-3.5 h-3.5"/>Media: {selected.mediaType}</div>}</div>
-        <textarea value={editedText} onChange={e=>setEditedText(e.target.value)} rows={9} className="w-full px-3 py-3 bg-slate-950 border border-slate-800 rounded-xl text-sm text-white focus:outline-none focus:border-cyan-500" placeholder="Edit the caption/text before publishing…"/>
-        <div><div className="text-xs font-bold text-slate-300 mb-2">DESTINATIONS</div><div className="grid sm:grid-cols-2 gap-2">{chats.filter(c=>c.id!==sourceId && c.canSendMessages !== false).map(c=><button key={c.id} onClick={()=>toggleTarget(c.id)} className={`text-left p-3 rounded-xl border text-xs ${targetIds.includes(c.id)?'bg-cyan-950/60 border-cyan-500 text-cyan-200':'bg-slate-950 border-slate-800 text-slate-400'}`}>{c.title}<div className="font-mono text-[10px] mt-1 opacity-70">{c.id}</div></button>)}</div></div>
-        <div className="flex justify-end gap-2"><button onClick={()=>setSelected(null)} className="px-4 py-2 rounded-xl bg-slate-800 text-slate-300 text-xs font-semibold">Cancel</button><button onClick={publish} disabled={!targetIds.length||publishing} className="px-5 py-2 rounded-xl bg-cyan-600 hover:bg-cyan-500 disabled:opacity-50 text-white text-xs font-bold flex items-center gap-2"><Send className="w-3.5 h-3.5"/>{publishing?'Publishing…':'Publish Edited Post'}</button></div>
-      </div>
-    </div>}
+    {selected&&<div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4"><div className="w-full max-w-3xl max-h-[94vh] overflow-auto rounded-2xl bg-slate-900 border border-slate-700 shadow-2xl p-4 sm:p-5 space-y-4"><div className="flex items-center justify-between gap-3"><div className="min-w-0"><h3 className="text-base font-bold text-white">Edit Post #{selected.id}</h3><p className="text-xs text-slate-400 truncate">{currentSource?.title||sourceId} · {selected.date?new Date(selected.date).toLocaleString():''}</p></div><button onClick={()=>setSelected(null)} className="p-2 text-slate-400 hover:text-white shrink-0"><X className="w-5 h-5"/></button></div>{selected.mediaUrl&&selected.mediaType==='video'&&<video src={selected.mediaUrl} controls preload="metadata" className="w-full max-h-[360px] rounded-xl bg-black"/>}{selected.mediaUrl&&selected.mediaType==='photo'&&<img src={selected.mediaUrl} alt="Telegram media" className="w-full max-h-[360px] object-contain rounded-xl bg-black"/>}<textarea value={editedText} onChange={e=>setEditedText(e.target.value)} rows={8} className="w-full px-3 py-3 bg-slate-950 border border-slate-800 rounded-xl text-sm text-white focus:outline-none focus:border-cyan-500" placeholder="Edit the caption/text before publishing…"/><div><div className="text-xs font-bold text-slate-300 mb-2">DESTINATIONS</div><div className="grid grid-cols-1 sm:grid-cols-2 gap-2">{chats.filter(c=>c.id!==sourceId&&c.canSendMessages!==false).map(c=><button key={c.id} onClick={()=>toggleTarget(c.id)} className={`text-left p-3 rounded-xl border text-xs ${targetIds.includes(c.id)?'bg-cyan-950/60 border-cyan-500 text-cyan-200':'bg-slate-950 border-slate-800 text-slate-400'}`}>{c.title}<div className="font-mono text-[10px] mt-1 opacity-70">{c.id}</div></button>)}</div></div><div className="flex flex-col-reverse sm:flex-row justify-end gap-2"><button onClick={()=>setSelected(null)} className="px-4 py-2 rounded-xl bg-slate-800 text-slate-300 text-xs font-semibold">Cancel</button><button onClick={publish} disabled={!targetIds.length||publishing} className="px-5 py-2 rounded-xl bg-cyan-600 hover:bg-cyan-500 disabled:opacity-50 text-white text-xs font-bold flex items-center justify-center gap-2"><Send className="w-3.5 h-3.5"/>{publishing?'Publishing…':'Publish Edited Post'}</button></div></div></div>}
   </div>;
 };
