@@ -1,60 +1,87 @@
-# TGForwarder — Real-Time Telegram Message Forwarder & Channel Cloner
+# TGForwarder
 
-A modern, full-stack Telegram message forwarding engine and channel replication dashboard built with React, TypeScript, Tailwind CSS, Express, and GramJS / MTProto.
+Production Telegram forwarding and channel-management service built with React, TypeScript, Express and GramJS/MTProto.
 
-## Features
+## What it does
 
-- ⚡ **MTProto User & Bot Client**: Forward messages directly through your Telegram account or bot.
-- 🔒 **Private Channels & Groups Support**: Relay messages from private channels and groups you have joined without requiring admin status in the source.
-- 🛡️ **Restricted Content Handling**: Automatically handles "Restrict saving content" channels by streaming media and text payloads via clean direct reposts.
-- 📋 **Rules & Transformation Manager**:
-  - Whitelist / blacklist keyword filtering
-  - Regex replacement & watermark removal
-  - Media type filters (Photo, Video, Document, Audio, Voice, Poll)
-  - Duplicate detection & deduplication hashes
-  - Header removal ("Forwarded from" signature stripping)
-- 📊 **Real-Time Live Event Stream**: Server-Sent Events (SSE) stream for monitoring forwarded messages, rates, and active pipelines.
-- 🗄️ **Durable Local Mapping**: Tracks source-to-destination message IDs for full synchronization.
+- Connects a Telegram user account or bot through the real Telegram API.
+- Discovers the chats, groups and channels available to the connected account.
+- Creates source-to-target forwarding rules using authoritative Telegram chat IDs.
+- Supports multiple destinations per source.
+- Applies keyword filters, link filtering, text prefixes/suffixes and duplicate protection.
+- Handles media forwarding and removes the Telegram forwarded-message signature when configured.
+- Supports Telegram history retrieval and controlled publishing of existing posts.
+- Provides live engine state, activity logs, statistics and server-sent events.
+- Handles Telegram flood waits with configurable pacing and retries.
+- Persists configuration, sessions and forwarding mappings on a mounted data directory.
+- Protects the dashboard/API with `APP_AUTH_TOKEN` and rate limiting.
 
-## Quick Start
+## Production architecture
 
-### 1. Installation
+Railway runs the complete application as one persistent Node.js service. The Express server serves the compiled React dashboard and the `/api/*` backend from the same origin. The Telegram MTProto client stays alive as a long-running worker, which is required for real-time forwarding.
+
+## Requirements
+
+- Node.js 22
+- A Telegram API ID and API hash from `my.telegram.org`
+- A Telegram account session or bot token
+- A persistent filesystem for production session/configuration data
+
+## Local setup
 
 ```bash
-git clone https://github.com/leephil1907-lab/TGForwarder.git
-cd TGForwarder
 npm install
-```
-
-### 2. Configuration
-
-Copy `.env.example` to `.env` and fill in your credentials from [my.telegram.org](https://my.telegram.org):
-
-```bash
 cp .env.example .env
-```
-
-```env
-TG_API_ID="your_api_id"
-TG_API_HASH="your_api_hash"
-```
-
-### 3. Run Development Server
-
-```bash
 npm run dev
 ```
 
-Open your browser at `http://localhost:3000`.
+Open `http://localhost:3000`.
 
-### 4. Production Build
+## Production setup
 
 ```bash
+npm install
 npm run build
 npm start
 ```
 
-## Security & Privacy Notice
+Set these environment variables in the production service:
 
-- Never commit your `.env` file, `.data/` directory, or Telegram session strings (`*.session`) to public repositories.
-- All session credentials, tokens, and phone numbers are excluded in `.gitignore`.
+- `APP_AUTH_TOKEN` — long random secret for dashboard/API access.
+- `TG_API_ID` — Telegram API ID.
+- `TG_API_HASH` — Telegram API hash.
+- `TG_SESSION_STRING` — optional existing GramJS StringSession.
+- `TG_BOT_TOKEN` — optional bot login token.
+- `TG_DATA_DIR` — persistent data directory, recommended as `/data` on Railway.
+- `TG_SOURCE_ID`, `TG_TARGET_ID` or `TG_FORWARDING_RULES` — optional initial forwarding configuration.
+- `NODE_ENV=production`
+- `HOST=0.0.0.0`
+
+Do not commit Telegram API credentials, bot tokens, session strings or `APP_AUTH_TOKEN`.
+
+## Railway
+
+The repository contains a Railway configuration that builds the Docker image, starts the persistent service with `npm start`, restarts it after failures and checks `/api/health`.
+
+Mount a Railway Volume at `/data` and set `TG_DATA_DIR=/data` so Telegram sessions, configuration and forwarding mappings survive redeployments.
+
+After deployment, verify:
+
+```text
+https://YOUR-RAILWAY-DOMAIN/api/health
+```
+
+The endpoint should return JSON with `status: "ok"`.
+
+## Security
+
+- Keep `APP_AUTH_TOKEN` private.
+- Never commit `.env`, session files or production data.
+- Use a strong unique dashboard token.
+- Only connect Telegram accounts you control or are authorized to operate.
+- Configure source and destination chats using their real Telegram IDs.
+- Respect Telegram's terms, privacy requirements and applicable laws when forwarding content.
+
+## License
+
+See `LICENSE` for the repository license terms.
