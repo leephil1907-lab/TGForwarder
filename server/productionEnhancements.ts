@@ -12,7 +12,7 @@ const mediaMeta = (message: any) => {
   const media = message?.media;
   const document = message?.document || media?.document;
   const attributes = Array.isArray(document?.attributes) ? document.attributes : [];
-  const videoAttribute = attributes.find((a: any) => a?.className === 'DocumentAttributeVideo' || a?.duration !== undefined && (a?.w !== undefined || a?.h !== undefined));
+  const videoAttribute = attributes.find((a: any) => a?.className === 'DocumentAttributeVideo' || (a?.duration !== undefined && (a?.w !== undefined || a?.h !== undefined)));
   const audioAttribute = attributes.find((a: any) => a?.className === 'DocumentAttributeAudio' || a?.voice === true);
   const fileAttribute = attributes.find((a: any) => a?.fileName);
   const mimeType = document?.mimeType || media?.mimeType || null;
@@ -38,10 +38,33 @@ const mediaMeta = (message: any) => {
   };
 };
 
+const parseRange = (header: string | undefined, size: number) => {
+  if (!header || !header.startsWith('bytes=')) return null;
+  const first = header.slice(6).split(',')[0].trim();
+  const match = first.match(/^(\d*)-(\d*)$/);
+  if (!match) return null;
+  const startRaw = match[1];
+  const endRaw = match[2];
+  let start: number;
+  let end: number;
+  if (startRaw === '' && endRaw === '') return null;
+  if (startRaw === '') {
+    const suffixLength = Number(endRaw);
+    if (!Number.isFinite(suffixLength) || suffixLength <= 0) return null;
+    start = Math.max(0, size - suffixLength);
+    end = size - 1;
+  } else {
+    start = Number(startRaw);
+    end = endRaw === '' ? size - 1 : Number(endRaw);
+  }
+  if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end < start || start >= size) return null;
+  return { start, end: Math.min(end, size - 1) };
+};
+
 try {
   const express = await import('express');
   const appProto: any = (express as any).application;
-  if (appProto && !appProto.__tgforwarderHistoryMediaV2) {
+  if (appProto && !appProto.__tgforwarderHistoryMediaV3) {
     const originalGet = appProto.get;
     appProto.get = function (routePath: any, ...handlers: any[]) {
       if (routePath === '/api/history' && handlers.length) {
@@ -96,10 +119,24 @@ try {
             if (body.length > 150 * 1024 * 1024) {
               return res.status(413).json({ error: 'This Telegram media file is too large for in-browser preview.' });
             }
+
+            const range = parseRange(req.headers.range, body.length);
+            const filename = meta.fileName ? meta.fileName.replace(/["\r\n]/g, '') : '';
+            res.setHeader('Accept-Ranges', 'bytes');
+            res.setHeader('Cache-Control', 'private, max-age=60');
+            res.setHeader('Content-Disposition', `inline${filename ? `; filename="${filename}"` : ''}`);
+
+            if (range) {
+              const chunk = body.subarray(range.start, range.end + 1);
+              res.status(206);
+              res.setHeader('Content-Type', mime);
+              res.setHeader('Content-Length', String(chunk.length));
+              res.setHeader('Content-Range', `bytes ${range.start}-${range.end}/${body.length}`);
+              return res.end(chunk);
+            }
+
             res.setHeader('Content-Type', mime);
             res.setHeader('Content-Length', String(body.length));
-            res.setHeader('Cache-Control', 'private, max-age=60');
-            res.setHeader('Content-Disposition', `inline${meta.fileName ? `; filename="${meta.fileName.replace(/"/g, '')}"` : ''}`);
             return res.end(body);
           } catch (error: any) {
             return res.status(502).json({ error: error?.message || 'Unable to load Telegram media.' });
@@ -109,7 +146,7 @@ try {
       }
       return originalGet.call(this, routePath, ...handlers);
     };
-    appProto.__tgforwarderHistoryMediaV2 = true;
+    appProto.__tgforwarderHistoryMediaV3 = true;
   }
 } catch (error) {
   console.warn('[TGForwarder] History media enhancement could not initialize:', (error as any)?.message || error);
