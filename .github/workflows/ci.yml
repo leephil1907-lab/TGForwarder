@@ -2,7 +2,7 @@ name: TGForwarder CI
 
 on:
   push:
-    branches: [main, production-v2-isolation-history-editor, production-data-accuracy-fix]
+    branches: [main]
   pull_request:
     branches: [main]
 
@@ -31,7 +31,6 @@ jobs:
         run: npm run build
         env:
           NODE_ENV: production
-          APP_AUTH_TOKEN: ci-test-token
 
       - name: Verify build artifacts
         run: |
