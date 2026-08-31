@@ -11,19 +11,25 @@ const safeString = (value: any): string | null => {
 const mediaMeta = (message: any) => {
   const media = message?.media;
   const document = message?.document || media?.document;
-  const video = message?.video || media?.video;
-  const audio = message?.audio;
-  const voice = message?.voice;
-  const fileName = document?.attributes?.find?.((a: any) => a?.fileName)?.fileName || null;
+  const attributes = Array.isArray(document?.attributes) ? document.attributes : [];
+  const videoAttribute = attributes.find((a: any) => a?.className === 'DocumentAttributeVideo' || a?.duration !== undefined && (a?.w !== undefined || a?.h !== undefined));
+  const audioAttribute = attributes.find((a: any) => a?.className === 'DocumentAttributeAudio' || a?.voice === true);
+  const fileAttribute = attributes.find((a: any) => a?.fileName);
   const mimeType = document?.mimeType || media?.mimeType || null;
+  const isPhoto = Boolean(message?.photo);
+  const isVideo = Boolean(message?.video) || Boolean(videoAttribute) || String(mimeType || '').toLowerCase().startsWith('video/');
+  const isVoice = Boolean(message?.voice) || Boolean(audioAttribute?.voice);
+  const isAudio = Boolean(message?.audio) || Boolean(audioAttribute) || String(mimeType || '').toLowerCase().startsWith('audio/');
+  const isAnimation = Boolean(message?.gif) || String(mimeType || '').toLowerCase() === 'image/gif';
+  const mediaType = isPhoto ? 'photo' : isVideo ? 'video' : isVoice ? 'voice' : isAudio ? 'audio' : isAnimation ? 'animation' : document ? 'document' : media ? 'media' : null;
   const size = document?.size ?? media?.size ?? null;
-  const duration = video?.duration ?? audio?.duration ?? voice?.duration ?? null;
-  const width = video?.w ?? video?.width ?? null;
-  const height = video?.h ?? video?.height ?? null;
+  const duration = videoAttribute?.duration ?? audioAttribute?.duration ?? null;
+  const width = videoAttribute?.w ?? null;
+  const height = videoAttribute?.h ?? null;
   return {
-    mediaType: message?.video ? 'video' : message?.photo ? 'photo' : message?.document ? 'document' : message?.audio ? 'audio' : message?.voice ? 'voice' : message?.gif ? 'animation' : media ? 'media' : null,
+    mediaType,
     mimeType,
-    fileName: safeString(fileName),
+    fileName: safeString(fileAttribute?.fileName),
     size: typeof size === 'number' ? size : null,
     duration: typeof duration === 'number' ? duration : null,
     width: typeof width === 'number' ? width : null,
@@ -35,7 +41,7 @@ const mediaMeta = (message: any) => {
 try {
   const express = await import('express');
   const appProto: any = (express as any).application;
-  if (appProto && !appProto.__tgforwarderHistoryMediaV1) {
+  if (appProto && !appProto.__tgforwarderHistoryMediaV2) {
     const originalGet = appProto.get;
     appProto.get = function (routePath: any, ...handlers: any[]) {
       if (routePath === '/api/history' && handlers.length) {
@@ -83,7 +89,7 @@ try {
             if (!message || !message.media) return res.status(404).json({ error: 'Telegram media was not found.' });
 
             const meta = mediaMeta(message);
-            const mime = meta.mimeType || (meta.mediaType === 'photo' ? 'image/jpeg' : 'application/octet-stream');
+            const mime = meta.mimeType || (meta.mediaType === 'photo' ? 'image/jpeg' : meta.mediaType === 'video' ? 'video/mp4' : 'application/octet-stream');
             const downloaded = await client.downloadMedia(message, { workers: 1 });
             if (!downloaded) return res.status(404).json({ error: 'Telegram media could not be downloaded.' });
             const body = Buffer.isBuffer(downloaded) ? downloaded : Buffer.from(downloaded as any);
@@ -103,7 +109,7 @@ try {
       }
       return originalGet.call(this, routePath, ...handlers);
     };
-    appProto.__tgforwarderHistoryMediaV1 = true;
+    appProto.__tgforwarderHistoryMediaV2 = true;
   }
 } catch (error) {
   console.warn('[TGForwarder] History media enhancement could not initialize:', (error as any)?.message || error);
