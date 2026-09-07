@@ -55,6 +55,18 @@ session is needed.
 - API: `GET/POST /api/fetcher/jobs`, `POST /api/fetcher/jobs/:id/cancel`,
   `POST /api/fetcher/jobs/:id/retry`, `DELETE /api/fetcher/jobs/:id`.
 - The connected account must be a member of private chats you fetch from.
+
+## Verifying the Railway volume
+
+After attaching a volume and deploying, open `https://<your-app>/api/health`
+(authenticated) and confirm:
+
+```json
+"storage": { "dir": "/data", "writable": true, "volumeAttached": true }
+```
+
+The boot log also prints the active data directory and whether it is writable —
+if it says `NOT writable`, the volume is missing or `TG_DATA_DIR` is wrong.
 - Each fetched item has an **Edit** action: preview the original media, edit the
   caption/text, choose a destination and publish.
 

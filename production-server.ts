@@ -52,6 +52,11 @@ async function startServer() {
   const AUTH_TOKEN = getOrCreateAuthToken();
   const requireAuth = createAuthMiddleware(AUTH_TOKEN);
   console.log(`[TGForwarder] Dashboard access control active (${process.env.APP_AUTH_TOKEN?.trim() ? 'token loaded from APP_AUTH_TOKEN env' : `generated token: ${AUTH_TOKEN} — also stored in the data directory`}).`);
+  // Storage/volume check: the data dir must be writable or sessions/jobs cannot persist.
+  const effectiveDataDir = process.env.TG_DATA_DIR || path.join(process.cwd(), '.data');
+  let storageWritable = false;
+  try { fs.mkdirSync(effectiveDataDir, { recursive: true }); fs.accessSync(effectiveDataDir, fs.constants.W_OK); storageWritable = true; } catch { storageWritable = false; }
+  console.log(`[TGForwarder] Data directory: ${effectiveDataDir} (${storageWritable ? 'writable' : 'NOT writable — sessions will fail to persist. Attach a volume and set TG_DATA_DIR, e.g. /data'})`);
   const authRateLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 20, standardHeaders: true, legacyHeaders: false, message: { error: 'Too many authentication attempts. Please wait and try again.' } });
   const apiRateLimiter = rateLimit({ windowMs: 60 * 1000, limit: 240, standardHeaders: true, legacyHeaders: false });
   const engine = TelegramEngine.getInstance();
@@ -64,7 +69,7 @@ async function startServer() {
     const authState = engine.getAuthState();
     const fetcherSummary = (() => { try { const jobs = restrictedFetcher.getJobs(50); return { total: jobs.length, active: jobs.filter((j) => j.status === 'queued' || j.status === 'running').length, lastJobAt: jobs.length ? jobs[0].createdAt : null }; } catch { return { total: 0, active: 0, lastJobAt: null }; } })();
     const autoImportSummary = (() => { try { return autoImportScheduler.summary(); } catch { return { total: 0, active: 0 }; } })();
-    res.json({ status: 'ok', worker: { status: authState.status === 'connected' ? 'online' : 'offline', engineRunning: engine.isEngineRunning(), isPaused: engine.isEnginePaused() }, engineRunning: engine.isEngineRunning(), isPaused: engine.isEnginePaused(), authStatus: authState.status, authenticated: authState.status === 'connected', userProfile: authState.userProfile, fetcher: fetcherSummary, autoImport: autoImportSummary, timestamp: Date.now() });
+    res.json({ status: 'ok', worker: { status: authState.status === 'connected' ? 'online' : 'offline', engineRunning: engine.isEngineRunning(), isPaused: engine.isEnginePaused() }, engineRunning: engine.isEngineRunning(), isPaused: engine.isEnginePaused(), authStatus: authState.status, authenticated: authState.status === 'connected', userProfile: authState.userProfile, fetcher: fetcherSummary, autoImport: autoImportSummary, storage: { dir: effectiveDataDir, writable: storageWritable, volumeAttached: effectiveDataDir === '/data' }, timestamp: Date.now() });
   };
   app.get('/api/health', handleHealthCheck);
   app.get('/api/health/status', handleHealthCheck);
