@@ -58,6 +58,20 @@ session is needed.
 - Each fetched item has an **Edit** action: preview the original media, edit the
   caption/text, choose a destination and publish.
 
+## Posting Modes: Auto vs Manual (per rule)
+
+Every forwarding rule has a posting-mode toggle:
+
+- **✋ Manual review (default)** — copied posts are staged in **Pending Posts**
+  where you can edit the text/caption and publish when ready. Identical content
+  is deduped at staging time so the review queue never fills with copies.
+- **⚡ Auto** — copied posts are published to the target instantly through the
+  normal dispatcher (rate-limited, flood-wait safe, duplicate-shielded).
+
+Toggle it per rule from the rule card (**⚡ Auto / ✋ Review** button) or in the
+rule form's "Posting mode" switch. API: included in `POST /api/rules` and
+`PUT /api/rules/:id` payloads as `autoPublish: true|false`.
+
 ## Auto-Import Watchers
 
 The Restricted Fetcher tab includes scheduled source watching: pick a source

@@ -60,6 +60,7 @@ export const RulesManager: React.FC<RulesManagerProps> = ({
 
   // Signature & Copy Settings
   const [removeForwardSignature, setRemoveForwardSignature] = useState(true);
+  const [autoPublish, setAutoPublish] = useState(false);
   const [duplicateProtection, setDuplicateProtection] = useState(true);
   const [preserveFormatting, setPreserveFormatting] = useState(true);
   const [dropLinks, setDropLinks] = useState(false);
@@ -122,6 +123,7 @@ export const RulesManager: React.FC<RulesManagerProps> = ({
     setMediaFilter({ ...DEFAULT_MEDIA_FILTER });
     setSenderFilter({ ...DEFAULT_SENDER_FILTER });
     setSenderIdsStr('');
+    setAutoPublish(false);
     setIsCreating(false);
     setEditingRuleId(null);
   };
@@ -135,6 +137,7 @@ export const RulesManager: React.FC<RulesManagerProps> = ({
     setTargetIdInput(rule.targetIds.join(', '));
     setTargetTitlesInput(rule.targetTitles.join(', '));
     setRemoveForwardSignature(rule.removeForwardSignature);
+    setAutoPublish(rule.autoPublish ?? false);
     setDuplicateProtection(rule.duplicateProtection);
     setPreserveFormatting(rule.preserveFormatting ?? true);
     setDropLinks(rule.dropLinks ?? false);
@@ -209,7 +212,8 @@ export const RulesManager: React.FC<RulesManagerProps> = ({
         ...senderFilter,
         senderIds: parsedSenderIds
       },
-      enabled: true
+      enabled: true,
+      autoPublish
     };
 
     try {
@@ -245,6 +249,19 @@ export const RulesManager: React.FC<RulesManagerProps> = ({
       onRefreshRules();
     } catch (err) {
       console.error('Error toggling rule:', err);
+    }
+  };
+
+  const handleToggleAutoPublish = async (rule: ForwardingRule) => {
+    try {
+      await fetch(`/api/rules/${rule.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ autoPublish: !rule.autoPublish })
+      });
+      onRefreshRules();
+    } catch (err) {
+      console.error('Error toggling posting mode:', err);
     }
   };
 
@@ -555,6 +572,32 @@ export const RulesManager: React.FC<RulesManagerProps> = ({
                 />
               </div>
 
+              {/* Posting mode: Auto vs Manual review */}
+              <div className="flex items-center justify-between gap-3 p-2.5 rounded-xl bg-slate-950 border border-slate-800">
+                <div className="min-w-0">
+                  <span className="text-xs text-slate-300 font-medium block">Posting mode</span>
+                  <p className="text-[10px] text-slate-500 mt-0.5">
+                    {autoPublish ? 'Copied posts publish to the target instantly.' : 'Copied posts wait in Pending Posts for your review and edit.'}
+                  </p>
+                </div>
+                <div className="flex p-0.5 rounded-lg bg-slate-900 border border-slate-800 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setAutoPublish(false)}
+                    className={`px-3 py-1.5 rounded-md text-[11px] font-bold transition-colors ${!autoPublish ? 'bg-cyan-600 text-white' : 'text-slate-400 hover:text-slate-200'}`}
+                  >
+                    ✋ Manual
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setAutoPublish(true)}
+                    className={`px-3 py-1.5 rounded-md text-[11px] font-bold transition-colors ${autoPublish ? 'bg-emerald-600 text-white' : 'text-slate-400 hover:text-slate-200'}`}
+                  >
+                    ⚡ Auto
+                  </button>
+                </div>
+              </div>
+
               {/* Toggles */}
               <div className="grid grid-cols-2 gap-2 text-xs">
                 <label className="flex items-center gap-2 p-2.5 rounded-xl bg-slate-950 border border-slate-800 cursor-pointer">
@@ -642,6 +685,9 @@ export const RulesManager: React.FC<RulesManagerProps> = ({
                       <span className="px-2 py-0.5 rounded bg-slate-950 border border-slate-800 text-[10px] font-mono text-slate-400">
                         {rule.removeForwardSignature ? 'Clean Repost' : 'Native Forward'}
                       </span>
+                      <span className={`px-2 py-0.5 rounded border text-[10px] font-mono ${rule.autoPublish ? 'bg-emerald-950/70 border-emerald-800 text-emerald-300' : 'bg-amber-950/60 border-amber-800 text-amber-300'}`}>
+                        {rule.autoPublish ? '⚡ Auto-post' : '✋ Review first'}
+                      </span>
                     </div>
 
                     {/* Routing Path */}
@@ -685,6 +731,17 @@ export const RulesManager: React.FC<RulesManagerProps> = ({
                       className="px-3 py-1.5 rounded-xl bg-slate-950 border border-slate-800 hover:border-cyan-500 text-slate-300 text-xs font-semibold transition-colors"
                     >
                       {testStatus[rule.id] || 'Test Access'}
+                    </button>
+                    <button
+                      onClick={() => handleToggleAutoPublish(rule)}
+                      title="Switch between instant auto-posting and manual review"
+                      className={`px-3 py-1.5 rounded-xl text-xs font-semibold border transition-colors ${
+                        rule.autoPublish
+                          ? 'bg-emerald-950/60 text-emerald-300 border-emerald-800/60'
+                          : 'bg-amber-950/40 text-amber-300 border-amber-800/60'
+                      }`}
+                    >
+                      {rule.autoPublish ? '⚡ Auto' : '✋ Review'}
                     </button>
                     <button
                       onClick={() => handleToggleRule(rule)}

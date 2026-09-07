@@ -74,6 +74,7 @@ export interface ForwardingRule {
   targetIds: string[];
   targetTitles: string[];
   removeForwardSignature: boolean; // clean repost without "forwarded from"
+  autoPublish?: boolean; // true = publish instantly; false = stage in Pending Posts for review
   duplicateProtection: boolean;
   preserveFormatting?: boolean;
   useKeywordFilter?: boolean;

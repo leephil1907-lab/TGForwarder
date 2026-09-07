@@ -31,6 +31,8 @@ export async function installPrivateSourceAutoForward(): Promise<void> {
       const config = engine.storage.getConfig();
       const rules = config.rules.filter((r: any) => r.enabled && r.sourceId && Array.isArray(r.targetIds) && r.targetIds.length && matchesSource(event, r));
       if (!rules.length) return;
+      // This listener owns this message — the generic pipeline must skip it.
+      (message as any).__tgforwarderClaimed = true;
 
       for (const rule of rules) {
         const sourceId = message.chatId.toString();
@@ -59,6 +61,15 @@ export async function installPrivateSourceAutoForward(): Promise<void> {
 
           chain = chain.then(async () => {
             try {
+              // MANUAL (review-first) mode: stage into Pending Posts instead of
+              // sending. The user edits/approves there before delivery.
+              if (!rule.autoPublish) {
+                await engine.dispatchItem.call(engine, {
+                  event, rule, targetId, targetTitle,
+                  processedText, scheduledTime: Date.now(), retries: 0
+                }, config?.globalRateLimit);
+                return;
+              }
               const targetEntity = await engine.resolveEntity(targetId);
               let sent: any;
 
