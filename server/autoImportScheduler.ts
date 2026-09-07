@@ -59,7 +59,11 @@ export class AutoImportScheduler {
     this.engine = TelegramEngine.getInstance();
     const base = process.env.TG_DATA_DIR || path.join(process.cwd(), '.data');
     const dir = path.join(base, 'tenants', 'default');
-    fs.mkdirSync(dir, { recursive: true });
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+    } catch (err: any) {
+      console.error(`[AutoImport] Data directory is not usable (${dir}): ${err?.message || err}. Attach a writable volume at TG_DATA_DIR (e.g. /data).`);
+    }
     this.file = path.join(dir, 'autoimport-watches.json');
     this.load();
     this.timer = setInterval(() => { void this.tick(); }, MASTER_TICK_MS);

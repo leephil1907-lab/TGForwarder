@@ -197,7 +197,14 @@ export class RestrictedFetcher {
     this.dataDir = path.join(base, 'fetcher');
     this.jobsFile = path.join(this.dataDir, 'jobs.json');
     this.downloadsDir = path.join(this.dataDir, 'downloads');
-    fs.mkdirSync(this.downloadsDir, { recursive: true });
+    try {
+      fs.mkdirSync(this.downloadsDir, { recursive: true });
+    } catch (err: any) {
+      // A missing/unwritable data directory must not take the whole service
+      // down. The boot log and /api/health surface the storage problem; fetch
+      // jobs that need files will report this error per item instead.
+      console.error(`[RestrictedFetcher] Data directory is not usable (${this.dataDir}): ${err?.message || err}. Attach a writable volume at TG_DATA_DIR (e.g. /data) or downloads/jobs cannot persist.`);
+    }
     this.loadJobs();
     this.watchdog = setInterval(() => {
       if (!this.processing && this.queue.length > 0 && this.engine.isAccountConnected()) {
@@ -219,6 +226,7 @@ export class RestrictedFetcher {
   private loadJobs() {
     try {
       if (!fs.existsSync(this.jobsFile)) return;
+      if (!fs.existsSync(this.dataDir)) return;
       const list = JSON.parse(fs.readFileSync(this.jobsFile, 'utf8'));
       if (!Array.isArray(list)) return;
       for (const job of list) {
@@ -734,7 +742,11 @@ export class RestrictedFetcher {
     // Files live in downloads/<jobId>/<itemId>/ — the download endpoint resolves
     // paths with the exact same layout (see getDownloadPath).
     const dir = path.join(this.downloadsDir, jobId, itemId);
-    fs.mkdirSync(dir, { recursive: true });
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+    } catch (err: any) {
+      throw new Error(`Cannot save downloads — data directory is not writable (${err?.message || err}). Attach a writable volume at TG_DATA_DIR.`);
+    }
     return dir;
   }
 
