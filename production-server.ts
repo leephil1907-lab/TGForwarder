@@ -73,6 +73,17 @@ async function startServer() {
   };
   app.get('/api/health', handleHealthCheck);
   app.get('/api/health/status', handleHealthCheck);
+  // Optional edge lock: when EDGE_SECRET is set, /api only accepts traffic that
+  // carries the shared secret — i.e. your Deno Deploy edge gateway. Set the
+  // same value on the gateway. /api/health stays open for platform healthchecks.
+  const EDGE_SECRET = process.env.EDGE_SECRET?.trim();
+  if (EDGE_SECRET) {
+    app.use('/api', (req, res, next) => {
+      if (req.path === '/health' || req.path === '/health/status') return next();
+      if (req.headers['x-edge-secret'] === EDGE_SECRET) return next();
+      return res.status(403).json({ error: 'This API only accepts traffic from the configured edge gateway.' });
+    });
+  }
   app.use('/api', apiRateLimiter, requireAuth);
   app.use('/api/auth', authRateLimiter);
 

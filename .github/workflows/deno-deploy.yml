@@ -1,0 +1,59 @@
+name: Deploy edge gateway to Deno Deploy
+
+# Builds the dashboard, then deploys the Deno edge gateway that serves it and
+# proxies /api/* to the persistent worker (Railway/VPS).
+#
+# Required GitHub secrets:
+#   DENO_DEPLOY_TOKEN   — Deno Deploy access token (dash.deno.land → Access tokens)
+#   DENO_DEPLOY_PROJECT — the Deno Deploy project name
+#
+# Required env on the Deno Deploy project (set once in its dashboard):
+#   WORKER_URL   — worker base URL, e.g. https://tgforwarder-production.up.railway.app
+#   EDGE_SECRET  — shared secret; set the SAME value on the worker to lock its API to this edge
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Typecheck edge gateway (Deno)
+        run: deno check deploy/deno/server.ts
+
+      - name: Install dependencies
+        run: npm ci --include=dev --no-audit --no-fund
+
+      - name: Build dashboard
+        run: npm run build
+        env:
+          NODE_ENV: production
+
+      - name: Deploy to Deno Deploy
+        env:
+          DENO_DEPLOY_TOKEN: ${{ secrets.DENO_DEPLOY_TOKEN }}
+        run: |
+          deno install -gArf jsr:@deno/deployctl
+          deployctl deploy \
+            --project="${{ secrets.DENO_DEPLOY_PROJECT }}" \
+            --entrypoint=deploy/deno/server.ts \
+            --include=dist \
+            --include=deploy \
+            --prod
