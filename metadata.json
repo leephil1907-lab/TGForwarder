@@ -1,0 +1,5 @@
+{
+  "name": "TGForwarder",
+  "description": "Production Telegram message forwarding and channel management service with MTProto authentication, source-to-target rules, history publishing, live monitoring, duplicate protection, and persistent state.",
+  "requestFramePermissions": []
+}
