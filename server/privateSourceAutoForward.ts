@@ -6,10 +6,19 @@ import { normalizeChatId } from './storage.js';
 export async function installPrivateSourceAutoForward(): Promise<void> {
   const engine = TelegramEngine.getInstance() as any;
   await engine.waitForInitialization();
+  attachPrivateSourceListener(engine);
+}
+
+/**
+ * Attaches the private-source listener to ONE engine instance. Idempotent.
+ * Multi-user safe: each tenant engine gets its own listener when it starts.
+ */
+export function attachPrivateSourceListener(engine: any): void {
   const client = engine.client;
   if (!client || engine.authState?.status !== 'connected') return;
+  if (engine.__privateSourceListenerAttached) return;
+  engine.__privateSourceListenerAttached = true;
 
-  let running = Boolean(engine.storage.getConfig().isEngineRunning);
   let chain = Promise.resolve();
 
   const matchesSource = (event: NewMessageEvent, rule: any): boolean => {
@@ -25,7 +34,7 @@ export async function installPrivateSourceAutoForward(): Promise<void> {
 
   const handler = async (event: NewMessageEvent) => {
     try {
-      if (!running || !engine.client) return;
+      if (!engine.client || !engine.storage.getConfig().isEngineRunning) return;
       const message = event.message;
       if (!message?.id || !message.chatId) return;
       const config = engine.storage.getConfig();
@@ -111,10 +120,5 @@ export async function installPrivateSourceAutoForward(): Promise<void> {
   engine.activeEventHandler = handler;
   client.addEventHandler(handler, new NewMessage({ incoming: true }));
 
-  const originalStart = engine.startEngine.bind(engine);
-  const originalStop = engine.stopEngine.bind(engine);
-  engine.startEngine = async () => { const result = await originalStart(); running = true; return result; };
-  engine.stopEngine = async () => { running = false; await originalStop(); };
-
-  engine.log({ level: 'success', category: 'system', title: 'Private Source Listener Active', message: running ? 'Listening continuously for configured private-source messages.' : 'Listener installed; start the forwarding engine to begin automatic delivery.' });
+  engine.log({ level: 'success', category: 'system', title: 'Private Source Listener Active', message: 'Listening for configured private-source messages while the engine is running.' });
 }

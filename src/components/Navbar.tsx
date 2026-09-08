@@ -1,5 +1,5 @@
 import React from 'react';
-import { Play, Pause, Key, RefreshCw } from 'lucide-react';
+import { Play, Pause, Key, RefreshCw, LogOut, ShieldCheck } from 'lucide-react';
 import { AuthState, EngineStats } from '../types';
 
 interface NavbarProps {
@@ -11,6 +11,8 @@ interface NavbarProps {
   onOpenAuth: () => void;
   onToggleEngine: () => void;
   isEngineLoading: boolean;
+  identity: { username: string; role: string; isAdmin: boolean } | null;
+  onSignOut: () => void;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -22,6 +24,8 @@ export const Navbar: React.FC<NavbarProps> = ({
   onOpenAuth,
   onToggleEngine,
   isEngineLoading,
+  identity,
+  onSignOut,
 }) => {
   const isConnected = authState.status === 'connected' && Boolean(authState.userProfile);
 
@@ -41,6 +45,7 @@ export const Navbar: React.FC<NavbarProps> = ({
     },
     { id: 'stats', label: 'Analytics & Duplicates' },
     { id: 'python', label: 'CLI & Python Daemon' },
+    ...(identity?.isAdmin ? [{ id: 'admin', label: 'Access Control' }] : []),
   ];
 
   return (
@@ -76,6 +81,23 @@ export const Navbar: React.FC<NavbarProps> = ({
           </div>
 
           <div className="flex items-center gap-3">
+            {identity && (
+              <div className="hidden items-center gap-2 rounded-lg border border-slate-800 bg-slate-900 px-2.5 py-1.5 md:flex">
+                <div className="flex h-6 w-6 items-center justify-center rounded-full border border-violet-500/40 bg-violet-600/30 text-[10px] font-semibold text-violet-300">
+                  {identity.username.charAt(0).toUpperCase()}
+                </div>
+                <div className="leading-none">
+                  <div className="max-w-[120px] truncate text-xs font-medium text-slate-200">{identity.username}</div>
+                  <div className="mt-1 flex items-center gap-1 text-[10px] text-slate-500">
+                    {identity.isAdmin && <ShieldCheck size={10} className="text-cyan-400" />}
+                    {identity.isAdmin ? 'Administrator' : 'Member'}
+                  </div>
+                </div>
+                <button onClick={onSignOut} title="Sign out" className="ml-1 text-slate-500 transition-colors hover:text-red-400">
+                  <LogOut size={13} />
+                </button>
+              </div>
+            )}
             {isConnected ? (
               <button
                 onClick={onOpenAuth}

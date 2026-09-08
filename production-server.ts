@@ -8,6 +8,7 @@ import { StorageManager } from './server/storage.js';
 import { getOrCreateAuthToken, createAuthMiddleware } from './server/auth.js';
 import { restrictedFetcher } from './server/restrictedFetcher.js';
 import { autoImportScheduler } from './server/autoImportScheduler.js';
+import { userRegistry } from './server/users.js';
 import fs from 'fs';
 
 const clearEngineLogs = (engine: TelegramEngine) => {
@@ -68,7 +69,7 @@ async function startServer() {
     await engine.waitForInitialization();
     const authState = engine.getAuthState();
     const fetcherSummary = (() => { try { const jobs = restrictedFetcher.getJobs(50); return { total: jobs.length, active: jobs.filter((j) => j.status === 'queued' || j.status === 'running').length, lastJobAt: jobs.length ? jobs[0].createdAt : null }; } catch { return { total: 0, active: 0, lastJobAt: null }; } })();
-    const autoImportSummary = (() => { try { return autoImportScheduler.summary(); } catch { return { total: 0, active: 0 }; } })();
+    const autoImportSummary = (() => { try { return autoImportScheduler.aggregateSummary(); } catch { return { total: 0, active: 0 }; } })();
     res.json({ status: 'ok', worker: { status: authState.status === 'connected' ? 'online' : 'offline', engineRunning: engine.isEngineRunning(), isPaused: engine.isEnginePaused() }, engineRunning: engine.isEngineRunning(), isPaused: engine.isEnginePaused(), authStatus: authState.status, authenticated: authState.status === 'connected', userProfile: authState.userProfile, fetcher: fetcherSummary, autoImport: autoImportSummary, storage: { dir: effectiveDataDir, writable: storageWritable, volumeAttached: effectiveDataDir === '/data' }, timestamp: Date.now() });
   };
   app.get('/api/health', handleHealthCheck);
@@ -84,11 +85,29 @@ async function startServer() {
       return res.status(403).json({ error: 'This API only accepts traffic from the configured edge gateway.' });
     });
   }
+  // ==================== PUBLIC USER AUTH (before the auth wall) ====================
+  const loginRateLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 25, standardHeaders: true, legacyHeaders: false, message: { error: 'Too many attempts. Please wait and try again.' } });
+  app.post('/api/auth/user-login', loginRateLimiter, (req, res) => {
+    try {
+      const { username, password } = req.body || {};
+      const { user, token } = userRegistry.login(String(username || ''), String(password || ''));
+      res.json({ success: true, token, user: userRegistry.publicUser(user) });
+    } catch (err: any) { res.status(Number(err?.status) || 401).json({ success: false, error: err.message || 'Login failed.' }); }
+  });
+  app.post('/api/auth/user-register', loginRateLimiter, (req, res) => {
+    try {
+      const { inviteCode, username, password } = req.body || {};
+      const { user, token } = userRegistry.registerWithInvite(String(inviteCode || ''), String(username || ''), String(password || ''));
+      (engine as any).log?.({ level: 'success', category: 'auth', title: '👤 New User Registered', message: `User "${user.username}" activated an invite and joined with an isolated workspace.` });
+      res.json({ success: true, token, user: userRegistry.publicUser(user) });
+    } catch (err: any) { res.status(Number(err?.status) || 400).json({ success: false, error: err.message || 'Registration failed.' }); }
+  });
+
   app.use('/api', apiRateLimiter, requireAuth);
   app.use('/api/auth', authRateLimiter);
 
-  app.get('/api/config', async (_req, res) => { await engine.waitForInitialization(); res.json(storage.getSafeConfig()); });
-  app.post('/api/config', (req, res) => { const { apiId, apiHash, defaultRemoveSignature, retryOnFloodWait, globalRateLimit, accounts } = req.body; storage.saveConfig({ ...(apiId !== undefined && { apiId }), ...(apiHash !== undefined && { apiHash }), ...(defaultRemoveSignature !== undefined && { defaultRemoveSignature }), ...(retryOnFloodWait !== undefined && { retryOnFloodWait }), ...(globalRateLimit !== undefined && { globalRateLimit }), ...(accounts !== undefined && { accounts }) }); res.json(storage.getSafeConfig()); });
+  app.get('/api/config', async (_req, res) => { await engine.waitForInitialization(); res.json(StorageManager.getInstance().getSafeConfig()); });
+  app.post('/api/config', (req, res) => { const { apiId, apiHash, defaultRemoveSignature, retryOnFloodWait, globalRateLimit, accounts } = req.body; StorageManager.getInstance().saveConfig({ ...(apiId !== undefined && { apiId }), ...(apiHash !== undefined && { apiHash }), ...(defaultRemoveSignature !== undefined && { defaultRemoveSignature }), ...(retryOnFloodWait !== undefined && { retryOnFloodWait }), ...(globalRateLimit !== undefined && { globalRateLimit }), ...(accounts !== undefined && { accounts }) }); res.json(StorageManager.getInstance().getSafeConfig()); });
 
   app.get('/api/auth/status', async (_req, res) => { await engine.waitForInitialization(); res.json(engine.getAuthState()); });
   app.post('/api/auth/request-code', async (req, res) => { try { clearEngineLogs(engine); const { apiId, apiHash, phoneNumber } = req.body; if (!apiId || !apiHash || !phoneNumber) return res.status(400).json({ error: 'API ID, API Hash, and Phone Number are required.' }); res.json(await engine.requestPhoneCode(apiId, apiHash, phoneNumber)); } catch (err: any) { res.status(500).json({ error: err.message || 'Failed to request verification code' }); } });
@@ -96,16 +115,25 @@ async function startServer() {
   app.post('/api/auth/verify-2fa', async (req, res) => { try { const { password } = req.body; if (!password) return res.status(400).json({ error: '2FA password is required.' }); res.json(await engine.verify2FA(password)); } catch (err: any) { res.status(500).json({ error: err.message || '2FA verification failed' }); } });
   app.post('/api/auth/bot-login', async (req, res) => { try { clearEngineLogs(engine); const { apiId, apiHash, botToken } = req.body; if (!apiId || !apiHash || !botToken) return res.status(400).json({ error: 'API ID, API Hash, and Bot Token are required.' }); res.json(await engine.connectWithBotToken(apiId, apiHash, botToken)); } catch (err: any) { res.status(500).json({ error: err.message || 'Failed to connect bot' }); } });
   app.post('/api/auth/session-login', async (req, res) => { try { clearEngineLogs(engine); const { apiId, apiHash, sessionString } = req.body; if (!apiId || !apiHash || !sessionString) return res.status(400).json({ error: 'API ID, API Hash, and Session String are required.' }); res.json(await engine.connectWithStringSession(apiId, apiHash, sessionString)); } catch (err: any) { res.status(500).json({ error: err.message || 'Failed to connect session' }); } });
+  // ==================== USER SESSION & ADMIN MANAGEMENT ====================
+  const requireAdmin = (req: express.Request, res: express.Response, next: express.NextFunction) => { if ((req as any).role !== 'admin') return res.status(403).json({ error: 'Administrator access required.' }); return next(); };
+  app.get('/api/auth/me', (req, res) => { res.json({ success: true, mode: (req as any).role === 'admin' && (req as any).username === 'admin' ? 'admin' : 'user', user: { username: (req as any).username, role: (req as any).role, userId: (req as any).userId } }); });
+  app.post('/api/auth/user-logout', (req, res) => { const header = req.headers['authorization']; const provided = typeof header === 'string' && header.startsWith('Bearer ') ? header.slice(7).trim() : (typeof req.query.token === 'string' ? req.query.token : ''); res.json({ success: userRegistry.logout(provided) }); });
+  app.get('/api/users', requireAdmin, (_req, res) => res.json({ success: true, users: userRegistry.listUsers() }));
+  app.put('/api/users/:id', requireAdmin, (req, res) => { const updated = userRegistry.setUserDisabled(decodeURIComponent(req.params.id), Boolean(req.body?.disabled)); if (!updated) return res.status(404).json({ success: false, error: 'User not found.' }); res.json({ success: true, user: updated }); });
+  app.get('/api/users/invites', requireAdmin, (_req, res) => res.json({ success: true, invites: userRegistry.listInvites() }));
+  app.post('/api/users/invites', requireAdmin, (req, res) => { const invite = userRegistry.createInvite((req as any).username || 'admin', String(req.body?.label || '')); res.json({ success: true, invite }); });
+  app.delete('/api/users/invites/:code', requireAdmin, (req, res) => res.json({ success: userRegistry.deleteInvite(decodeURIComponent(req.params.code).toUpperCase()) }));
   app.post('/api/auth/disconnect', async (_req, res) => { try { await engine.disconnect(); clearEngineLogs(engine); res.json({ success: true, message: 'Disconnected successfully. Session activity was cleared.' }); } catch (err: any) { clearEngineLogs(engine); res.status(500).json({ error: err.message || 'Error disconnecting' }); } });
 
   app.get('/api/chats/discover', async (_req, res) => { try { res.json({ success: true, chats: await engine.discoverChats() }); } catch (err: any) { res.status(500).json({ error: err.message || 'Error discovering chats' }); } });
   app.post('/api/chats/verify-permissions', async (req, res) => { try { const { sourceId, targetIds } = req.body; if (!sourceId || !Array.isArray(targetIds) || !targetIds.length) return res.status(400).json({ error: 'sourceId and targetIds array are required.' }); res.json(await engine.verifyPipelinePermissions(sourceId, targetIds)); } catch (err: any) { res.status(500).json({ error: err.message || 'Failed to verify pipeline permissions' }); } });
   app.post('/api/chats/test-target', async (req, res) => { try { if (!req.body.targetId) return res.status(400).json({ error: 'Target ID is required.' }); res.json(await engine.testTargetAccess(req.body.targetId, req.body.testMessage)); } catch (err: any) { res.status(500).json({ error: err.message || 'Failed to verify target entity' }); } });
 
-  app.get('/api/rules', (_req, res) => res.json(storage.getConfig().rules));
-  app.post('/api/rules', (req, res) => { try { const { name, sourceId, sourceTitle, sourceUsername, targetIds, targetTitles, removeForwardSignature, duplicateProtection, filterKeywords, dropLinks, prependText, appendText, enabled, autoPublish } = req.body; if (!sourceId || !Array.isArray(targetIds) || !targetIds.length) return res.status(400).json({ error: 'Source ID and at least one Target ID are required.' }); res.json(storage.addRule({ name: name || `Funnel: ${sourceTitle || sourceId}`, sourceId: sourceId.trim(), sourceTitle: sourceTitle || sourceId, sourceUsername, targetIds: targetIds.map((t: string) => t.trim()), targetTitles: targetTitles || targetIds, removeForwardSignature: removeForwardSignature ?? true, autoPublish: autoPublish ?? false, duplicateProtection: duplicateProtection ?? true, filterKeywords: filterKeywords || [], dropLinks: dropLinks ?? false, prependText: prependText || '', appendText: appendText || '', enabled: enabled ?? true })); } catch (err: any) { res.status(500).json({ error: err.message || 'Failed to save rule' }); } });
-  app.put('/api/rules/:id', (req, res) => { try { const updated = storage.updateRule(req.params.id, req.body); if (!updated) return res.status(404).json({ error: 'Rule not found' }); res.json(updated); } catch (err: any) { res.status(500).json({ error: err.message || 'Failed to update rule' }); } });
-  app.delete('/api/rules/:id', (req, res) => res.json({ success: storage.deleteRule(req.params.id) }));
+  app.get('/api/rules', (_req, res) => res.json(StorageManager.getInstance().getConfig().rules));
+  app.post('/api/rules', (req, res) => { try { const { name, sourceId, sourceTitle, sourceUsername, targetIds, targetTitles, removeForwardSignature, duplicateProtection, filterKeywords, dropLinks, prependText, appendText, enabled, autoPublish } = req.body; if (!sourceId || !Array.isArray(targetIds) || !targetIds.length) return res.status(400).json({ error: 'Source ID and at least one Target ID are required.' }); res.json(StorageManager.getInstance().addRule({ name: name || `Funnel: ${sourceTitle || sourceId}`, sourceId: sourceId.trim(), sourceTitle: sourceTitle || sourceId, sourceUsername, targetIds: targetIds.map((t: string) => t.trim()), targetTitles: targetTitles || targetIds, removeForwardSignature: removeForwardSignature ?? true, autoPublish: autoPublish ?? false, duplicateProtection: duplicateProtection ?? true, filterKeywords: filterKeywords || [], dropLinks: dropLinks ?? false, prependText: prependText || '', appendText: appendText || '', enabled: enabled ?? true })); } catch (err: any) { res.status(500).json({ error: err.message || 'Failed to save rule' }); } });
+  app.put('/api/rules/:id', (req, res) => { try { const updated = StorageManager.getInstance().updateRule(req.params.id, req.body); if (!updated) return res.status(404).json({ error: 'Rule not found' }); res.json(updated); } catch (err: any) { res.status(500).json({ error: err.message || 'Failed to update rule' }); } });
+  app.delete('/api/rules/:id', (req, res) => res.json({ success: StorageManager.getInstance().deleteRule(req.params.id) }));
 
   app.post('/api/engine/start', async (_req, res) => { try { res.json(await engine.startEngine()); } catch (err: any) { res.status(500).json({ error: err.message || 'Failed to start engine' }); } });
   app.post('/api/engine/stop', async (_req, res) => { try { await engine.stopEngine(); res.json({ success: true, message: 'Forwarding engine stopped.' }); } catch (err: any) { res.status(500).json({ error: err.message || 'Failed to stop engine' }); } });
@@ -114,7 +142,7 @@ async function startServer() {
   app.get('/api/stats', (_req, res) => res.json(engine.getStats()));
   app.get('/api/logs', (_req, res) => res.json(engine.getRecentLogs()));
   app.post('/api/logs/clear', (_req, res) => { clearEngineLogs(engine); res.json({ success: true }); });
-  app.get('/api/mappings', (req, res) => { const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 100; res.json({ totalCount: storage.getMappingsCount(), mappings: storage.getAllMappings(limit) }); });
+  app.get('/api/mappings', (req, res) => { const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 100; res.json({ totalCount: StorageManager.getInstance().getMappingsCount(), mappings: StorageManager.getInstance().getAllMappings(limit) }); });
 
   app.get('/api/pending', (_req, res) => { res.json({ success: true, posts: (engine as any).getPendingPosts?.() || [] }); });
   app.post('/api/pending/:key/publish', async (req, res) => { try { const key = decodeURIComponent(req.params.key); const result = await (engine as any).publishPendingPost?.(key, typeof req.body?.text === 'string' ? req.body.text : undefined); if (!result) return res.status(500).json({ error: 'Manual publishing is unavailable.' }); res.json(result); } catch (err: any) { res.status(502).json({ error: err.message || 'Failed to publish pending Telegram post.' }); } });
@@ -246,7 +274,7 @@ async function startServer() {
   app.post('/api/autoimport/:id/run', async (req, res) => { try { res.json(await autoImportScheduler.runNow(decodeURIComponent(req.params.id))); } catch (err: any) { res.status(400).json({ success: false, error: err.message || 'Run failed.' }); } });
 
   app.get('/api/stream', (req, res) => { res.setHeader('Content-Type', 'text/event-stream; charset=utf-8'); res.setHeader('Cache-Control', 'no-cache, no-transform'); res.setHeader('Connection', 'keep-alive'); res.setHeader('X-Accel-Buffering', 'no'); res.flushHeaders(); let closed = false; const write = (chunk: string) => { if (closed || res.writableEnded) return; try { res.write(chunk); } catch { closed = true; } }; write(': stream-connected\n\n'); const unsubscribe = engine.subscribeSSE((data) => write(`data: ${JSON.stringify(data)}\n\n`)); const heartbeat = setInterval(() => { if (closed || res.writableEnded) clearInterval(heartbeat); else write(': keepalive-ping\n\n'); }, 15000); const cleanup = () => { if (closed) return; closed = true; clearInterval(heartbeat); unsubscribe(); }; req.on('close', cleanup); req.on('end', cleanup); res.on('finish', cleanup); res.on('error', cleanup); });
-  app.get('/api/python-export', (_req, res) => { const config = storage.getConfig(); const rulesStr = config.rules.filter((r) => r.enabled && r.sourceId && r.targetIds.length).map((r) => `${r.sourceId}:${r.targetIds.join(':')}`).join(','); res.json({ envContent: `# TGForwarder Pro Exported .env\nAPI_ID="${config.apiId || ''}"\nAPI_HASH="${config.apiHash || ''}"\n${config.botToken ? `BOT_TOKEN="${config.botToken}"\n` : ''}FORWARDING_RULES="${rulesStr}"\nREMOVE_FORWARD_SIGNATURE="${config.defaultRemoveSignature ? 'true' : 'false'}"\n`, requirements: 'telethon==1.40.0\npython-dotenv==1.1.1\n', pythonScriptNotice: 'Use python3 telegram_forwarder.py --remove-forward-signature' }); });
+  app.get('/api/python-export', (_req, res) => { const config = StorageManager.getInstance().getConfig(); const rulesStr = config.rules.filter((r) => r.enabled && r.sourceId && r.targetIds.length).map((r) => `${r.sourceId}:${r.targetIds.join(':')}`).join(','); res.json({ envContent: `# TGForwarder Pro Exported .env\nAPI_ID="${config.apiId || ''}"\nAPI_HASH="${config.apiHash || ''}"\n${config.botToken ? `BOT_TOKEN="${config.botToken}"\n` : ''}FORWARDING_RULES="${rulesStr}"\nREMOVE_FORWARD_SIGNATURE="${config.defaultRemoveSignature ? 'true' : 'false'}"\n`, requirements: 'telethon==1.40.0\npython-dotenv==1.1.1\n', pythonScriptNotice: 'Use python3 telegram_forwarder.py --remove-forward-signature' }); });
 
   if (process.env.NODE_ENV !== 'production') { const vite = await createViteServer({ server: { middlewareMode: true }, appType: 'spa' }); app.use(vite.middlewares); }
   else { const distPath = path.join(process.cwd(), 'dist'); app.use(express.static(distPath)); app.get('*', (_req, res) => res.sendFile(path.join(distPath, 'index.html'))); }

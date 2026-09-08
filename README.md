@@ -70,6 +70,17 @@ if it says `NOT writable`, the volume is missing or `TG_DATA_DIR` is wrong.
 - Each fetched item has an **Edit** action: preview the original media, edit the
   caption/text, choose a destination and publish.
 
+## Multi-User Access (invite-only)
+
+TGForwarder supports multiple isolated users on one deployment:
+
+- **Administrator** — sign in with the server's `APP_AUTH_TOKEN` (the "Admin" tab on the access gate). The admin keeps the original `default` workspace (existing rules, session and data are untouched) and manages invites and users under the **Access Control** tab.
+- **Invites** — admin generates single-use codes (`TGF-XXXXXX-XXXXXX`, optional label). Share a code with a new user; they pick a username + password on the **Register** tab. Unused invites can be revoked; used ones are kept for audit.
+- **Users** — each registered user gets a fully isolated workspace under `data/tenants/<tenantId>/`: their own Telegram session, forwarding rules, fetch jobs + downloads, watchers, pending posts, mappings, logs and stats. Users can never see each other's data. Passwords are stored as `scrypt` hashes; sessions are sha256-hashed tokens with a 30-day TTL.
+- **Admin controls** — disable a user (signs them out immediately and blocks re-login) or re-enable them at any time.
+
+No extra configuration is needed: multi-user is always on, and the master token remains the admin identity.
+
 ## Posting Modes: Auto vs Manual (per rule)
 
 Every forwarding rule has a posting-mode toggle:

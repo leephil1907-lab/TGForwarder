@@ -16,6 +16,19 @@ function engineFor(id: string) {
     runWithTenant(id, () => Promise.resolve(engine.initializeFromStorage?.()).catch((error: any) => {
       engine.log?.({ level: 'warn', category: 'system', title: 'Session Auto-connect Failed', message: error?.message || 'Unable to restore Telegram session.' });
     }));
+    // Every user's engine gets the private-source listener the first time its
+    // forwarding engine starts (it needs a live client, which exists by then).
+    const originalStart = engine.startEngine.bind(engine);
+    engine.startEngine = async (...args: any[]) => {
+      const result = await originalStart(...args);
+      try {
+        const { attachPrivateSourceListener } = await import('./privateSourceAutoForward.js');
+        attachPrivateSourceListener(engine);
+      } catch (error: any) {
+        engine.log?.({ level: 'warn', category: 'system', title: 'Private Source Listener Skipped', message: error?.message || 'Unable to attach the private-source listener.' });
+      }
+      return result;
+    };
   }
   return engine;
 }
