@@ -9,6 +9,7 @@ import { getOrCreateAuthToken, createAuthMiddleware } from './server/auth.js';
 import { restrictedFetcher } from './server/restrictedFetcher.js';
 import { autoImportScheduler } from './server/autoImportScheduler.js';
 import { userRegistry } from './server/users.js';
+import { runWithTenant } from './server/tenantContext.js';
 import fs from 'fs';
 
 const clearEngineLogs = (engine: TelegramEngine) => {
@@ -101,6 +102,92 @@ async function startServer() {
       (engine as any).log?.({ level: 'success', category: 'auth', title: '👤 New User Registered', message: `User "${user.username}" activated an invite and joined with an isolated workspace.` });
       res.json({ success: true, token, user: userRegistry.publicUser(user) });
     } catch (err: any) { res.status(Number(err?.status) || 400).json({ success: false, error: err.message || 'Registration failed.' }); }
+  });
+
+  // ==================== TELEGRAM-FIRST AUTH (invite → connect Telegram → in) ====================
+  // The site username IS the connected Telegram username; no site password.
+  // A short-lived "pending connect" bearer token isolates the pre-registration
+  // Telegram handshake in its own throwaway tenant.
+  const pendingAuth = (req: express.Request): string | null => {
+    const header = req.headers['authorization'];
+    const provided = typeof header === 'string' && header.startsWith('Bearer ') ? header.slice(7).trim() : '';
+    return userRegistry.getPendingConnect(provided) ? provided : null;
+  };
+  app.post('/api/auth/invite-connect', loginRateLimiter, (req, res) => {
+    try { res.json({ success: true, token: userRegistry.startInviteConnect(String(req.body?.inviteCode || '')).token }); }
+    catch (err: any) { res.status(Number(err?.status) || 400).json({ success: false, error: err.message || 'Invalid invite.' }); }
+  });
+  app.post('/api/auth/telegram-connect', loginRateLimiter, (_req, res) => {
+    try { res.json({ success: true, token: userRegistry.startLoginConnect().token }); }
+    catch (err: any) { res.status(500).json({ success: false, error: err.message || 'Could not start the Telegram sign-in.' }); }
+  });
+
+  const completePending = async (pendingToken: string, tenantId: string) => {
+    // Read the connected Telegram identity from the handshake tenant.
+    const engineProxy = TelegramEngine.getInstance() as any;
+    const profile = await runWithTenant(tenantId, async () => {
+      await engineProxy.waitForInitialization?.();
+      if (engineProxy.authState?.status !== 'connected' || !engineProxy.client) {
+        throw Object.assign(new Error('Telegram is not connected yet.'), { status: 400 });
+      }
+      const p = engineProxy.getAuthState().userProfile;
+      return { telegramId: String(p?.id || ''), username: p?.username ? String(p.username).replace(/^@/, '') : '', firstName: String(p?.firstName || '') };
+    });
+    const { user, token, created } = userRegistry.completeTelegramConnect(pendingToken, profile);
+    // Returning user signed in via a throwaway tenant: move the fresh Telegram
+    // session into their real workspace and reconnect their engine with it.
+    if (user.tenantId !== tenantId) {
+      try {
+        const fresh = runWithTenant(tenantId, () => StorageManager.getInstance().getConfig().sessionString || '');
+        if (fresh) {
+          runWithTenant(user.tenantId, () => StorageManager.getInstance().saveSession(fresh));
+          const userEngine = runWithTenant(user.tenantId, () => TelegramEngine.getInstance()) as any;
+          void runWithTenant(user.tenantId, () => Promise.resolve(userEngine.initializeFromStorage?.()).catch(() => {}));
+        }
+      } catch { /* best-effort: their previous session still applies */ }
+    }
+    return { token, created, user: { id: user.id, username: user.username, telegramUsername: user.telegramUsername, role: user.role } };
+  };
+
+  app.post('/api/auth/pending/request-code', async (req, res) => {
+    const pendingToken = pendingAuth(req);
+    if (!pendingToken) return res.status(401).json({ error: 'Connect session missing or expired. Start again.' });
+    const pending = userRegistry.getPendingConnect(pendingToken)!;
+    try {
+      const { apiId, apiHash, phoneNumber } = req.body;
+      if (!apiId || !apiHash || !phoneNumber) return res.status(400).json({ error: 'API ID, API Hash, and Phone Number are required.' });
+      const engineProxy = TelegramEngine.getInstance() as any;
+      const result = await runWithTenant(pending.tenantId, () => engineProxy.requestPhoneCode(Number(apiId), String(apiHash), String(phoneNumber)));
+      res.json(result);
+    } catch (err: any) { res.status(500).json({ error: err.message || 'Failed to send the Telegram code.' }); }
+  });
+  app.post('/api/auth/pending/verify-code', async (req, res) => {
+    const pendingToken = pendingAuth(req);
+    if (!pendingToken) return res.status(401).json({ error: 'Connect session missing or expired. Start again.' });
+    const pending = userRegistry.getPendingConnect(pendingToken)!;
+    try {
+      const { phoneCode } = req.body;
+      if (!phoneCode) return res.status(400).json({ error: 'Phone verification code is required.' });
+      const engineProxy = TelegramEngine.getInstance() as any;
+      const result = await runWithTenant(pending.tenantId, () => engineProxy.verifyCode(String(phoneCode)));
+      if (result.requires2FA) return res.json({ success: false, requires2FA: true, message: result.message });
+      const completion = await completePending(pendingToken, pending.tenantId);
+      res.json({ success: true, ...completion });
+    } catch (err: any) { res.status(Number(err?.status) || 500).json({ error: err.message || 'Failed to verify the code.' }); }
+  });
+  app.post('/api/auth/pending/verify-2fa', async (req, res) => {
+    const pendingToken = pendingAuth(req);
+    if (!pendingToken) return res.status(401).json({ error: 'Connect session missing or expired. Start again.' });
+    const pending = userRegistry.getPendingConnect(pendingToken)!;
+    try {
+      const { password } = req.body;
+      if (!password) return res.status(400).json({ error: '2FA password is required.' });
+      const engineProxy = TelegramEngine.getInstance() as any;
+      const result = await runWithTenant(pending.tenantId, () => engineProxy.verify2FA(String(password)));
+      if (!result.success) return res.json({ success: false, requires2FA: true, message: result.message });
+      const completion = await completePending(pendingToken, pending.tenantId);
+      res.json({ success: true, ...completion });
+    } catch (err: any) { res.status(Number(err?.status) || 500).json({ error: err.message || '2FA verification failed.' }); }
   });
 
   app.use('/api', apiRateLimiter, requireAuth);

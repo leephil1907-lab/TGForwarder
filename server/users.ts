@@ -22,6 +22,12 @@ export interface UserRecord {
   tenantId: string;
   createdAt: number;
   disabled: boolean;
+  /** Telegram-account identity (Telegram IS the login for invited users). */
+  telegramId?: string;
+  /** @username read from the connected Telegram account (with @). */
+  telegramUsername?: string;
+  authProvider?: 'password' | 'telegram';
+  lastLoginAt?: number;
 }
 
 export interface InviteRecord {
@@ -32,6 +38,18 @@ export interface InviteRecord {
   createdAt: number;
   /** Epoch ms after which the invite can no longer be used. null = never expires. */
   expiresAt?: number | null;
+  usedAt?: number | null;
+}
+
+export interface PendingConnect {
+  /** Opaque bearer token carried by the pre-registration Telegram handshake. */
+  token: string;
+  /** Tenant the Telegram session will be written into (final for signups). */
+  tenantId: string;
+  /** Invite that authorizes a NEW account (null = returning-user login). */
+  inviteCode: string | null;
+  createdAt: number;
+  expiresAt: number;
 }
 
 export interface SessionRecord {
@@ -44,6 +62,7 @@ export interface SessionRecord {
 interface RegistryFile {
   users: UserRecord[];
   invites: InviteRecord[];
+  pending: PendingConnect[];
   sessions: SessionRecord[];
 }
 
@@ -74,7 +93,7 @@ function verifyPassword(password: string, stored: string): boolean {
 
 export class UserRegistry {
   private static instance: UserRegistry | null = null;
-  private data: RegistryFile = { users: [], invites: [], sessions: [] };
+  private data: RegistryFile = { users: [], invites: [], pending: [], sessions: [] };
   private saveTimer: NodeJS.Timeout | null = null;
 
   private constructor() {
@@ -95,11 +114,13 @@ export class UserRegistry {
       this.data = {
         users: Array.isArray(parsed.users) ? parsed.users : [],
         invites: Array.isArray(parsed.invites) ? parsed.invites : [],
+        pending: Array.isArray(parsed.pending) ? parsed.pending : [],
         sessions: Array.isArray(parsed.sessions) ? parsed.sessions : [],
       };
-      // Purge expired sessions on load.
+      // Purge expired sessions and stale connect handshakes on load.
       const now = Date.now();
       this.data.sessions = this.data.sessions.filter((s) => s.expiresAt > now);
+      this.data.pending = this.data.pending.filter((p) => p.expiresAt > now);
     } catch (err: any) {
       console.error('[Users] Could not load user registry:', err?.message || err);
     }
@@ -230,6 +251,132 @@ export class UserRegistry {
     const removed = this.data.sessions.length !== before;
     if (removed) this.scheduleSave();
     return removed;
+  }
+
+  // ==================== TELEGRAM-FIRST AUTH ====================
+
+  private findPending(token: string): PendingConnect | null {
+    const pending = this.data.pending.find((p) => p.token === token);
+    if (!pending || pending.expiresAt <= Date.now()) return null;
+    return pending;
+  }
+
+  /** Looks up a connect handshake by its bearer token (used by the public routes). */
+  getPendingConnect(token: string): PendingConnect | null {
+    if (!token || token.length > 128) return null;
+    return this.findPending(token);
+  }
+
+  /**
+   * Begin the Telegram connect handshake for a NEW account. The invite is
+   * validated up front and bound to the handshake; it is consumed only when
+   * the Telegram login actually completes.
+   */
+  startInviteConnect(inviteCode: string): { token: string } {
+    const code = String(inviteCode || '').trim().toUpperCase();
+    const invite = this.data.invites.find((i) => i.code.toUpperCase() === code);
+    if (!invite) throw Object.assign(new Error('Invalid invite code. Ask the administrator for a valid invite.'), { status: 403 });
+    if (invite.usedBy) throw Object.assign(new Error('This invite has already been used.'), { status: 403 });
+    if (invite.expiresAt && Date.now() > invite.expiresAt) {
+      throw Object.assign(new Error('This invite code has expired. Ask the administrator for a new one.'), { status: 403 });
+    }
+    const record: PendingConnect = {
+      token: crypto.randomBytes(24).toString('hex'),
+      tenantId: `u-${crypto.randomBytes(8).toString('hex')}`,
+      inviteCode: invite.code,
+      createdAt: Date.now(),
+      expiresAt: Date.now() + 15 * 60_000,
+    };
+    this.data.pending.push(record);
+    if (this.data.pending.length > 500) this.data.pending = this.data.pending.slice(-250);
+    this.scheduleSave();
+    return { token: record.token };
+  }
+
+  /** Begin the Telegram connect handshake for a RETURNING user (no invite). */
+  startLoginConnect(): { token: string } {
+    const record: PendingConnect = {
+      token: crypto.randomBytes(24).toString('hex'),
+      tenantId: `pending-${crypto.randomBytes(8).toString('hex')}`,
+      inviteCode: null,
+      createdAt: Date.now(),
+      expiresAt: Date.now() + 15 * 60_000,
+    };
+    this.data.pending.push(record);
+    if (this.data.pending.length > 500) this.data.pending = this.data.pending.slice(-250);
+    this.scheduleSave();
+    return { token: record.token };
+  }
+
+  private findByTelegramId(telegramId: string): UserRecord | null {
+    const id = String(telegramId || '');
+    return this.data.users.find((u) => u.telegramId && u.telegramId === id) || null;
+  }
+
+  /**
+   * Complete the handshake after a successful Telegram login: an existing
+   * Telegram identity simply logs in; a new one consumes its invite and gets
+   * an account whose username IS their Telegram username.
+   */
+  completeTelegramConnect(pendingToken: string, tg: { telegramId: string; username?: string; firstName?: string }): { user: UserRecord; token: string; created: boolean } {
+    const pending = this.findPending(pendingToken);
+    if (!pending) throw Object.assign(new Error('Connect session expired or missing. Start again.'), { status: 400 });
+    const telegramId = String(tg?.telegramId || '').trim();
+    if (!telegramId) throw Object.assign(new Error('Telegram account information is missing.'), { status: 400 });
+
+    // Returning user: Telegram identity already registered → log them in.
+    const existing = this.findByTelegramId(telegramId);
+    if (existing) {
+      if (existing.disabled) throw Object.assign(new Error('This account has been disabled by the administrator.'), { status: 403 });
+      existing.lastLoginAt = Date.now();
+      this.data.pending = this.data.pending.filter((p) => p.token !== pending.token);
+      this.scheduleSave();
+      return { user: existing, token: this.issueSession(existing), created: false };
+    }
+
+    // New user: an invite is required.
+    let consumed: InviteRecord | null = null;
+    if (pending.inviteCode) {
+      const invite = this.data.invites.find((i) => i.code === pending.inviteCode);
+      if (!invite || invite.usedBy) throw Object.assign(new Error('This invite has already been used.'), { status: 403 });
+      if (invite.expiresAt && Date.now() > invite.expiresAt) throw Object.assign(new Error('This invite code has expired.'), { status: 403 });
+      invite.usedBy = telegramId;
+      invite.usedAt = Date.now();
+      consumed = invite;
+    } else {
+      throw Object.assign(new Error('No account exists for this Telegram account yet. An invite code is required to join.'), { status: 403 });
+    }
+
+    const username = this.deriveUsername(tg.username || '', tg.firstName || '', telegramId);
+    const user: UserRecord = {
+      id: `u-${crypto.randomBytes(6).toString('hex')}`,
+      username,
+      passHash: '',
+      role: 'user',
+      tenantId: pending.tenantId, // the Telegram session was saved in this tenant
+      createdAt: Date.now(),
+      disabled: false,
+      telegramId,
+      telegramUsername: tg.username ? `@${String(tg.username).replace(/^@/, '')}` : undefined,
+      authProvider: 'telegram',
+    };
+    this.data.users.push(user);
+    this.data.users = this.data.users.slice(-2000);
+    this.data.pending = this.data.pending.filter((p) => p.token !== pending.token);
+    this.scheduleSave();
+    void consumed;
+    return { user, token: this.issueSession(user), created: true };
+  }
+
+  /** Site username derived from the Telegram profile (unique, no user input). */
+  private deriveUsername(tgUsername: string, firstName: string, telegramId: string): string {
+    let base = String(tgUsername || '').replace(/^@/, '').replace(/[^A-Za-z0-9_]/g, '').slice(0, 24);
+    if (base.length < 3) base = (String(firstName || '').replace(/[^A-Za-z0-9_]/g, '') + telegramId.replace(/[^0-9]/g, '').slice(-4)).slice(0, 24);
+    if (base.length < 3) base = `tg${telegramId.replace(/[^0-9]/g, '').slice(-8)}`;
+    let candidate = base;
+    let counter = 2;
+    while (this.findUserByName(candidate)) candidate = `${base}${counter++}`;
+    return candidate;
   }
 
   /** Admin control: immediately invalidate every session belonging to a user. */
