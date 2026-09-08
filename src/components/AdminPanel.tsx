@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { Ticket, Users, Copy, Check, Trash2, RefreshCw, ShieldOff, ShieldCheck, Plus, LogOut, Activity, Clock } from 'lucide-react';
+import { Ticket, Users, Copy, Check, Trash2, RefreshCw, ShieldOff, ShieldCheck, Plus, LogOut, Activity, Clock, Link2 } from 'lucide-react';
 
 interface Invite {
   code: string;
@@ -112,13 +112,16 @@ export const AdminPanel: React.FC = () => {
     }
   };
 
-  const copy = async (code: string) => {
+  const copy = async (text: string) => {
     try {
-      await navigator.clipboard.writeText(code);
-      setCopied(code);
+      await navigator.clipboard.writeText(text);
+      setCopied(text);
       setTimeout(() => setCopied(null), 1500);
     } catch { /* clipboard unavailable */ }
   };
+
+  /** One-click link: opens the gate with the invite code pre-filled. */
+  const inviteLink = (code: string) => `${window.location.origin}/?invite=${code}`;
 
   const fmt = (ts?: number | null) => (ts ? new Date(ts).toLocaleString() : '—');
   const isExpired = (invite: Invite) => Boolean(invite.expiresAt && Date.now() > invite.expiresAt && !invite.usedBy);
@@ -187,6 +190,9 @@ export const AdminPanel: React.FC = () => {
           </button>
         </form>
 
+        <p className="text-[11px] text-slate-500 mb-3">
+          "Copy link" gives you a one-time signup URL with the code pre-filled — the new user just picks a username and password. Each code works exactly once.
+        </p>
         {loaded && invites.length === 0 ? (
           <p className="text-sm text-slate-500 py-3">No invite codes yet. Generate one to let someone register.</p>
         ) : (
@@ -222,12 +228,20 @@ export const AdminPanel: React.FC = () => {
                     </td>
                     <td className="py-2 pr-3 text-slate-500">{invite.expiresAt ? fmt(invite.expiresAt) : 'Never'}</td>
                     <td className="py-2 pr-3 text-slate-500">{fmt(invite.createdAt)}</td>
-                    <td className="py-2 text-right">
-                      {!invite.usedBy && (
-                        <button onClick={() => deleteInvite(invite.code)} disabled={busy} title="Revoke invite" className="text-slate-500 hover:text-red-400 disabled:opacity-50">
-                          <Trash2 size={14} />
-                        </button>
-                      )}
+                    <td className="py-2">
+                      <div className="flex items-center justify-end gap-2">
+                        {!invite.usedBy && (
+                          <>
+                            <button onClick={() => copy(inviteLink(invite.code))} disabled={busy} title="Copy invite link (code pre-filled)" className={`flex items-center gap-1 rounded-lg border px-2 py-1 text-[11px] font-medium disabled:opacity-50 ${copied === inviteLink(invite.code) ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400' : 'border-slate-700 bg-slate-800/60 text-slate-300 hover:border-sky-500/40 hover:text-sky-300'}`}>
+                              {copied === inviteLink(invite.code) ? <Check size={12} /> : <Link2 size={12} />}
+                              {copied === inviteLink(invite.code) ? 'Copied' : 'Copy link'}
+                            </button>
+                            <button onClick={() => deleteInvite(invite.code)} disabled={busy} title="Revoke invite" className="text-slate-500 hover:text-red-400 disabled:opacity-50">
+                              <Trash2 size={14} />
+                            </button>
+                          </>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 ))}

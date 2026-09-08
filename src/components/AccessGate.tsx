@@ -18,19 +18,55 @@ type Mode = 'token' | 'signin' | 'register';
 const isAdminEntry = () => typeof window !== 'undefined' && window.location.hash.toLowerCase() === '#admin';
 
 /**
+ * Invite deep-links carry the one-time access code in the URL, e.g.
+ *   https://your-app.example/?invite=TGF-ABC123-XYZ789
+ *   https://your-app.example/#invite=TGF-ABC123-XYZ789
+ * The code is auto-read so the invited user never types it.
+ */
+function readInviteFromUrl(): string {
+  if (typeof window === 'undefined') return '';
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const fromQuery = params.get('invite') || params.get('code');
+    if (fromQuery) return fromQuery.trim().toUpperCase();
+    const match = window.location.hash.match(/#invite=([A-Za-z0-9_-]+)/);
+    return match ? match[1].trim().toUpperCase() : '';
+  } catch {
+    return '';
+  }
+}
+
+/** Removes the invite from the address bar after it has been picked up. */
+function consumeInviteFromUrl() {
+  try {
+    const url = new URL(window.location.href);
+    url.searchParams.delete('invite');
+    url.searchParams.delete('code');
+    if (url.hash.toLowerCase().startsWith('#invite=')) url.hash = '';
+    window.history.replaceState(null, '', url.toString());
+  } catch { /* ignore */ }
+}
+
+/**
  * Multi-user access gate:
  *  - "Sign in"   → registered user (username + password).
  *  - "Register"  → activate an admin-issued invite code + choose a password.
  *  - "Admin"     → only with #admin in the URL; master APP_AUTH_TOKEN sign-in.
  */
 export function AccessGate({ onUnlock, error }: AccessGateProps) {
+  const linkedInvite = readInviteFromUrl();
   const [adminEntry, setAdminEntry] = useState(isAdminEntry);
-  const [mode, setMode] = useState<Mode>(() => (isAdminEntry() ? 'token' : 'signin'));
+  const [mode, setMode] = useState<Mode>(() => (isAdminEntry() ? 'token' : linkedInvite ? 'register' : 'signin'));
   const [value, setValue] = useState('');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [password2, setPassword2] = useState('');
-  const [inviteCode, setInviteCode] = useState('');
+  const [inviteCode, setInviteCode] = useState(linkedInvite);
+
+  // Consume the deep-linked invite once (keep the URL clean afterwards).
+  useEffect(() => {
+    if (linkedInvite) consumeInviteFromUrl();
+  }, []);
   const [submitting, setSubmitting] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
 
@@ -135,10 +171,12 @@ export function AccessGate({ onUnlock, error }: AccessGateProps) {
         {mode === 'register' && (
           <>
             <p className="text-sm text-slate-400 mb-4">
-              New here? Enter the <span className="text-slate-200">invite code</span> you received, then pick a username and password.
+              {linkedInvite
+                ? <>Your invite code from the link you opened: <span className="font-mono text-cyan-300">{linkedInvite}</span>. Pick a username and password to create your workspace.</>
+                : <>New here? Enter the <span className="text-slate-200">invite code</span> you received, then pick a username and password.</>}
             </p>
             <input
-              type="text" autoFocus value={inviteCode} onChange={(e) => setInviteCode(e.target.value)}
+              type="text" autoFocus={!linkedInvite} value={inviteCode} onChange={(e) => setInviteCode(e.target.value)}
               placeholder="Invite code (e.g. TGF-ABC123-XYZ789)" className={`${inputCls} font-mono uppercase`}
             />
             <input
