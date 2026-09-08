@@ -25,3 +25,5 @@ jobs:
         run: npx -y tsx media.mts
       - name: Engineering fallback proof
         run: npx -y tsx fallback.mts
+      - name: Ops (alerts/backup) proof
+        run: npx -y tsx ops.mts

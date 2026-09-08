@@ -70,6 +70,26 @@ if it says `NOT writable`, the volume is missing or `TG_DATA_DIR` is wrong.
 - Each fetched item has an **Edit** action: preview the original media, edit the
   caption/text, choose a destination and publish.
 
+## Backup & Restore
+
+The **Analytics** tab has a **Backup & Restore** card. "Download backup" saves a single
+JSON file containing your Telegram session, rules, mappings, pending posts, watchers and
+fetch jobs. Restoring a backup replaces the current workspace and restarts the service.
+Keep backups offline — they contain your Telegram session string.
+
+## Failure Alerts (optional)
+
+Get notified the moment deliveries start failing (deduped per route, max 20/hour):
+
+- `ALERT_BOT_TOKEN` + `ALERT_CHAT_ID` — Telegram message via any @BotFather bot (add the bot to your channel/group or use your user id)
+- `ALERT_WEBHOOK_URL` — receives `{type:"delivery_failure", sourceId, targetId, ruleName, error, at}`
+
+## Storage: no database needed
+
+All state lives as flat files on the persistent volume (`/data`). You do **not** need to
+attach a Railway database (Postgres/MySQL/Redis) — that would add a network dependency
+and another service to operate for zero benefit at this scale.
+
 ## Access
 
 Single-operator deployment: the dashboard is unlocked with the server's `APP_AUTH_TOKEN`

@@ -10,6 +10,7 @@ import { RateLimitModal } from './components/RateLimitModal';
 import { AccessGate } from './components/AccessGate';
 import { PostHistory } from './components/PostHistory';
 import { PendingPosts } from './components/PendingPosts';
+import { BackupPanel } from './components/BackupPanel';
 import { FetcherPanel } from './components/FetcherPanel';
 import { getStoredToken, clearStoredToken, withTokenParam } from './lib/authToken';
 import { AuthState, SafeConfig, DiscoveredChat, ActivityLog, EngineStats, RateLimitConfig, SafeTelegramAccount } from './types';
@@ -63,7 +64,7 @@ export default function App() {
       {activeTab==='chats'&&<ChatExplorer discoveredChats={chats} isScanning={scanning} onScanChats={scan} onSelectAsSource={c=>{setQuickSource(c);setActiveTab('funnel');}} onSelectAsTarget={c=>{setQuickTarget(c);setActiveTab('funnel');}} authState={authState}/>} 
       {activeTab==='history'&&<PostHistory chats={chats} authState={authState}/>} 
       {activeTab==='console'&&<LiveConsole logs={logs} onClearLogs={clearLogs} isEngineRunning={Boolean(config?.isEngineRunning)} authState={authState}/>} 
-      {activeTab==='stats'&&<StatsCards stats={stats} rules={config?.rules||[]} rateLimit={rate} isEngineRunning={Boolean(config?.isEngineRunning)} onOpenRateLimit={()=>setRateOpen(true)}/>} 
+      {activeTab==='stats'&&<><StatsCards stats={stats} rules={config?.rules||[]} rateLimit={rate} isEngineRunning={Boolean(config?.isEngineRunning)} onOpenRateLimit={()=>setRateOpen(true)}/><BackupPanel/></>} 
       {activeTab==='python'&&<PythonExporter config={config} rules={config?.rules||[]}/>} 
     </main>
     <AuthModal isOpen={authOpen} onClose={()=>setAuthOpen(false)} authState={authState} config={config} onRefreshAuth={fetchData}/>

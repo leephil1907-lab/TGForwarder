@@ -51,7 +51,7 @@ async function startServer() {
   const PORT = parseInt(process.env.PORT || '3000', 10);
   const HOST = process.env.HOST || '0.0.0.0';
   app.use(helmet({ contentSecurityPolicy: false }));
-  app.use(express.json({ limit: '4mb' }));
+  app.use(express.json({ limit: '16mb' })); // backups can bundle a large mappings history
   // Gzip API + static responses. SSE must stay uncompressed (buffering breaks streaming).
   app.use(compression({ filter: (req, res) => (String(req.path).startsWith('/api/stream') ? false : (compression as any).filter(req, res)) }));
   const AUTH_TOKEN = getOrCreateAuthToken();
@@ -76,6 +76,59 @@ async function startServer() {
     const autoImportSummary = (() => { try { return autoImportScheduler.summary(); } catch { return { total: 0, active: 0 }; } })();
     res.json({ status: 'ok', worker: { status: authState.status === 'connected' ? 'online' : 'offline', engineRunning: engine.isEngineRunning(), isPaused: engine.isEnginePaused() }, engineRunning: engine.isEngineRunning(), isPaused: engine.isEnginePaused(), authStatus: authState.status, authenticated: authState.status === 'connected', userProfile: authState.userProfile, fetcher: fetcherSummary, autoImport: autoImportSummary, storage: { dir: effectiveDataDir, writable: storageWritable, volumeAttached: effectiveDataDir === '/data' }, timestamp: Date.now() });
   };
+  // ==================== BACKUP & RESTORE ====================
+  const BACKUP_FILES = [
+    'tenants/default/config.json',
+    'tenants/default/mappings.json',
+    'tenants/default/pending-posts.json',
+    'tenants/default/autoimport-watches.json',
+    'tenants/default/fetcher/jobs.json',
+  ];
+  app.get('/api/backup', async (_req, res) => {
+    try {
+      const dataDir = process.env.TG_DATA_DIR || path.join(process.cwd(), '.data');
+      const files: Record<string, string> = {};
+      for (const rel of BACKUP_FILES) {
+        const full = path.join(dataDir, rel);
+        try { if (fs.existsSync(full)) files[rel] = fs.readFileSync(full, 'utf8'); } catch { /* skip unreadable */ }
+      }
+      let version = 'dev';
+      try { version = String(JSON.parse(fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8')).version || 'dev'); } catch { /* dev */ }
+      res.setHeader('Content-Disposition', `attachment; filename="tgforwarder-backup-${new Date().toISOString().slice(0, 10)}.json"`);
+      res.json({ tgforwarderBackup: true, version, createdAt: Date.now(), files });
+    } catch (err: any) { res.status(500).json({ error: err.message || 'Backup failed.' }); }
+  });
+  app.post('/api/backup/restore', (req, res) => {
+    try {
+      const bundle = req.body;
+      if (!bundle || bundle.tgforwarderBackup !== true || !bundle.files || typeof bundle.files !== 'object') {
+        return res.status(400).json({ error: 'This does not look like a TGForwarder backup file.' });
+      }
+      const dataDir = process.env.TG_DATA_DIR || path.join(process.cwd(), '.data');
+      const restored: string[] = [];
+      for (const [rel, content] of Object.entries(bundle.files)) {
+        if (!BACKUP_FILES.includes(rel)) {
+          return res.status(400).json({ error: `Backup contains an unrecognized file ("${rel}"). Refusing to restore — use a backup made by this version.` });
+        }
+        if (typeof content !== 'string') continue;
+        if (content.length > 12 * 1024 * 1024) return res.status(400).json({ error: `${rel} is too large to restore.` });
+        try { JSON.parse(content); } catch { return res.status(400).json({ error: `${rel} is not valid JSON — backup file is corrupted.` }); }
+        const full = path.join(dataDir, rel);
+        if (!full.startsWith(path.join(dataDir, 'tenants'))) return res.status(400).json({ error: 'Invalid backup path.' });
+        fs.mkdirSync(path.dirname(full), { recursive: true });
+        const tmp = `${full}.restore-${Date.now()}`;
+        fs.writeFileSync(tmp, content, 'utf8');
+        fs.renameSync(tmp, full);
+        restored.push(rel);
+      }
+      if (!restored.length) return res.status(400).json({ error: 'Nothing restorable found in this backup.' });
+      (engine as any).log?.({ level: 'warn', category: 'system', title: '♻️ Backup Restored', message: `${restored.length} file(s) restored from a backup created ${bundle.createdAt ? new Date(bundle.createdAt).toLocaleString() : 'at an unknown time'}. Restarting to apply.` });
+      const willRestart = process.env.TGF_RESTART_ON_RESTORE !== '0';
+      res.json({ success: true, restored, restarting: willRestart });
+      if (willRestart) setTimeout(() => process.exit(0), 1200); // Railway restarts the service — fresh boot loads the restored files
+    } catch (err: any) { res.status(500).json({ error: err.message || 'Restore failed.' }); }
+  });
+
   app.get('/api/version', (_req, res) => { let version = 'dev'; try { version = String(JSON.parse(fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8')).version || 'dev'); } catch { /* dev mode */ } res.json({ version, node: process.version, uptimeSeconds: Math.round(process.uptime()), deployedAt: process.env.RAILWAY_DEPLOYMENT_ID || null }); });
   app.get('/api/system', async (_req, res) => { const memory = process.memoryUsage(); res.json({ rssMB: Math.round(memory.rss / 1048576), heapUsedMB: Math.round(memory.heapUsed / 1048576), heapTotalMB: Math.round(memory.heapTotal / 1048576), uptimeMinutes: Math.round(process.uptime() / 60), telegram: engine.getAuthState().status, engineRunning: engine.isEngineRunning() }); });
   app.get('/api/health', handleHealthCheck);

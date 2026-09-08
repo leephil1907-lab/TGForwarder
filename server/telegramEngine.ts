@@ -4,6 +4,7 @@ import { NewMessage, NewMessageEvent } from 'telegram/events/index.js';
 import { Api } from 'telegram';
 import { computeCheck } from 'telegram/Password.js';
 import { engineeringReUpload } from './engineeringForward.js';
+import { notifyDeliveryFailure } from './alerts.js';
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
@@ -1459,6 +1460,7 @@ export class TelegramEngine {
           }, (waitSec + 1) * 1000);
         } else {
           this.stats.totalFailed++;
+          notifyDeliveryFailure({ sourceId: chatId, targetId, ruleName: rule.name, error: `FloodWait ${waitSec}s exhausted all ${rateLimit.retryAttempts} retries`, context: 'floodwait-exhausted' });
         }
       } else {
         this.stats.totalFailed++;
@@ -1470,6 +1472,7 @@ export class TelegramEngine {
           targetId,
           targetTitle
         });
+        notifyDeliveryFailure({ sourceId: chatId, targetId, ruleName: rule.name, error: err.message || 'Write permission denied or chat not found', context: 'dispatch' });
       }
 
       this.broadcast('STATS_UPDATED', this.stats);

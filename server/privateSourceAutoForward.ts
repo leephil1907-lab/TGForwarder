@@ -1,5 +1,6 @@
 import { NewMessage, NewMessageEvent } from 'telegram/events/index.js';
 import { engineeringReUpload } from './engineeringForward.js';
+import { notifyDeliveryFailure } from './alerts.js';
 import crypto from 'crypto';
 import { TelegramEngine } from './telegramEngine.js';
 import { normalizeChatId } from './storage.js';
@@ -120,6 +121,7 @@ export function attachPrivateSourceListener(engine: any): void {
               engine.stats.totalFailed++;
               const errorMessage = err?.message || String(err) || 'Telegram send failed';
               engine.log({ level: 'error', category: 'forward', title: '❌ PUBLISH FAILED', message: `Message #${message.id} → "${targetTitle}": ${errorMessage}`, sourceId, sourceTitle, targetId, targetTitle, messageSnippet: snippet });
+              notifyDeliveryFailure({ sourceId, targetId, ruleName: rule.name, error: errorMessage, context: 'private-source' });
               engine.broadcast('STATS_UPDATED', engine.stats);
             }
           });
