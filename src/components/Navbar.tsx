@@ -25,6 +25,11 @@ export const Navbar: React.FC<NavbarProps> = ({
 }) => {
   const isConnected = authState.status === 'connected' && Boolean(authState.userProfile);
 
+  const [buildInfo, setBuildInfo] = React.useState<string>('');
+  React.useEffect(() => {
+    fetch('/api/version').then((r) => (r.ok ? r.json() : null)).then((d) => { if (d?.version) setBuildInfo(`v${d.version} · up ${Math.round((d.uptimeSeconds || 0) / 60)}m`); }).catch(() => {});
+  }, []);
+
   const [theme, setTheme] = React.useState<'light' | 'dark'>(() =>
     typeof document !== 'undefined' && document.documentElement.classList.contains('light') ? 'light' : 'dark'
   );
@@ -81,6 +86,7 @@ export const Navbar: React.FC<NavbarProps> = ({
               </div>
               <p className="hidden text-xs text-slate-400 sm:block">
                 Precision Source → Target Telegram Automation
+                {buildInfo && <span className="ml-2 rounded border border-slate-800 bg-slate-900 px-1.5 py-0.5 font-mono text-[10px] text-slate-500">{buildInfo}</span>}
               </p>
             </div>
           </div>

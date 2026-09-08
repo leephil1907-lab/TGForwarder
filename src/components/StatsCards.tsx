@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { AlarmClock, Download, FileVideo, Inbox, Send, Shield, Zap, Filter, Clock, CheckCircle, Radio, AlertTriangle, UserX, Image } from 'lucide-react';
+import { AlarmClock, Download, FileVideo, Inbox, Send, Shield, Zap, Filter, Clock, CheckCircle, Radio, AlertTriangle, UserX, Image, Activity } from 'lucide-react';
 import { EngineStats, FetcherJob, ForwardingRule, RateLimitConfig } from '../types';
 
 interface StatsCardsProps {
@@ -25,6 +25,16 @@ export const StatsCards: React.FC<StatsCardsProps> = ({
   isEngineRunning,
   onOpenRateLimit = () => {}
 }) => {
+  // ---- Server health (memory watch — early warning before an OOM) ----
+  const [sys, setSys] = useState<{ rssMB: number; heapUsedMB: number; uptimeMinutes: number } | null>(null);
+  useEffect(() => {
+    let mounted = true;
+    const pull = async () => { try { const r = await fetch('/api/system'); if (r.ok && mounted) setSys(await r.json()); } catch { /* ignore */ } };
+    pull();
+    const t = window.setInterval(() => { if (document.visibilityState === 'visible') void pull(); }, 10000);
+    return () => { mounted = false; window.clearInterval(t); };
+  }, []);
+
   // ---- Restricted Fetcher & Auto-Import telemetry ----
   const [jobs, setJobs] = useState<FetcherJob[]>([]);
   const [watcherCount, setWatcherCount] = useState({ total: 0, active: 0 });
@@ -46,7 +56,7 @@ export const StatsCards: React.FC<StatsCardsProps> = ({
       } catch { /* transient — next poll recovers */ }
     };
     void refresh();
-    const t = window.setInterval(() => { if (document.visibilityState === 'visible') void refresh(); }, 5000);
+    const t = window.setInterval(() => { if (document.visibilityState === 'visible') void refresh(); }, 15000);
     return () => { mounted = false; window.clearInterval(t); };
   }, []);
 
@@ -98,6 +108,22 @@ export const StatsCards: React.FC<StatsCardsProps> = ({
 
       {/* Primary Metrics Grid */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        {/* Metric 0: Server Health */}
+        <div className="p-5 rounded-2xl bg-gradient-to-br from-slate-900 to-slate-950 border border-slate-800 shadow-lg space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-semibold text-slate-400">Server Health</span>
+            <div className={`p-2 rounded-xl border ${(sys?.rssMB ?? 0) > 600 ? 'bg-amber-950/80 border-amber-800/80 text-amber-400' : 'bg-cyan-950/80 border-cyan-800/80 text-cyan-400'}`}>
+              <Activity className="w-4 h-4" />
+            </div>
+          </div>
+          <div className="text-2xl font-bold text-white font-mono tracking-tight">
+            {sys ? <>{sys.rssMB} <span className="text-sm text-slate-500">MB</span></> : '—'}
+          </div>
+          <p className="text-[11px] text-slate-400 flex items-center gap-1 font-medium">
+            RAM in use{sys ? ` · up ${sys.uptimeMinutes >= 60 ? `${Math.floor(sys.uptimeMinutes / 60)}h ${sys.uptimeMinutes % 60}m` : `${sys.uptimeMinutes}m`}` : ' · loading…'}
+          </p>
+        </div>
+
         {/* Metric 1: Total Relayed */}
         <div className="p-5 rounded-2xl bg-gradient-to-br from-slate-900 to-slate-950 border border-slate-800 shadow-lg space-y-2">
           <div className="flex items-center justify-between">

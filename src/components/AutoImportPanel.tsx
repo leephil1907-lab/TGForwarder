@@ -48,7 +48,7 @@ export const AutoImportPanel: React.FC<Props> = ({ chats, authState }) => {
 
   useEffect(() => {
     void refresh();
-    const t = setInterval(() => { if (document.visibilityState === 'visible') void refresh(); }, 5000);
+    const t = setInterval(() => { if (document.visibilityState === 'visible') void refresh(); }, 15000);
     return () => clearInterval(t);
   }, [refresh]);
 

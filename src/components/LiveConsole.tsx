@@ -71,8 +71,8 @@ export const LiveConsole: React.FC<LiveConsoleProps> = ({ logs, onClearLogs, isE
     };
     void refresh();
     void refreshHealth();
-    const timer = window.setInterval(() => { void refresh(); }, 2000);
-    const healthTimer = window.setInterval(() => { void refreshHealth(); }, 5000);
+    const timer = window.setInterval(() => { void refresh(); }, 15000); // safety net — SSE streams logs live
+    const healthTimer = window.setInterval(() => { void refreshHealth(); }, 30000);
     return () => { mounted = false; window.clearInterval(timer); window.clearInterval(healthTimer); };
   }, []);
 

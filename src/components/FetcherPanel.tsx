@@ -111,7 +111,7 @@ export const FetcherPanel: React.FC<Props> = ({ chats, authState, onOpenAuth, on
     if (pollRef.current) clearInterval(pollRef.current);
     pollRef.current = setInterval(() => {
       if (document.visibilityState === 'visible') void refreshJobs();
-    }, 2500);
+    }, 5000);
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
   }, [refreshJobs]);
 

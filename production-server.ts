@@ -2,6 +2,7 @@ import express from 'express';
 import path from 'path';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
+import compression from 'compression';
 import { createServer as createViteServer } from 'vite';
 import { TelegramEngine } from './server/telegramEngine.js';
 import { StorageManager } from './server/storage.js';
@@ -51,6 +52,8 @@ async function startServer() {
   const HOST = process.env.HOST || '0.0.0.0';
   app.use(helmet({ contentSecurityPolicy: false }));
   app.use(express.json({ limit: '4mb' }));
+  // Gzip API + static responses. SSE must stay uncompressed (buffering breaks streaming).
+  app.use(compression({ filter: (req, res) => (String(req.path).startsWith('/api/stream') ? false : (compression as any).filter(req, res)) }));
   const AUTH_TOKEN = getOrCreateAuthToken();
   const requireAuth = createAuthMiddleware(AUTH_TOKEN);
   console.log(`[TGForwarder] Dashboard access control active (${process.env.APP_AUTH_TOKEN?.trim() ? 'token loaded from APP_AUTH_TOKEN env' : `generated token: ${AUTH_TOKEN} — also stored in the data directory`}).`);
@@ -73,6 +76,8 @@ async function startServer() {
     const autoImportSummary = (() => { try { return autoImportScheduler.summary(); } catch { return { total: 0, active: 0 }; } })();
     res.json({ status: 'ok', worker: { status: authState.status === 'connected' ? 'online' : 'offline', engineRunning: engine.isEngineRunning(), isPaused: engine.isEnginePaused() }, engineRunning: engine.isEngineRunning(), isPaused: engine.isEnginePaused(), authStatus: authState.status, authenticated: authState.status === 'connected', userProfile: authState.userProfile, fetcher: fetcherSummary, autoImport: autoImportSummary, storage: { dir: effectiveDataDir, writable: storageWritable, volumeAttached: effectiveDataDir === '/data' }, timestamp: Date.now() });
   };
+  app.get('/api/version', (_req, res) => { let version = 'dev'; try { version = String(JSON.parse(fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8')).version || 'dev'); } catch { /* dev mode */ } res.json({ version, node: process.version, uptimeSeconds: Math.round(process.uptime()), deployedAt: process.env.RAILWAY_DEPLOYMENT_ID || null }); });
+  app.get('/api/system', async (_req, res) => { const memory = process.memoryUsage(); res.json({ rssMB: Math.round(memory.rss / 1048576), heapUsedMB: Math.round(memory.heapUsed / 1048576), heapTotalMB: Math.round(memory.heapTotal / 1048576), uptimeMinutes: Math.round(process.uptime() / 60), telegram: engine.getAuthState().status, engineRunning: engine.isEngineRunning() }); });
   app.get('/api/health', handleHealthCheck);
   app.get('/api/health/status', handleHealthCheck);
   // Optional edge lock: when EDGE_SECRET is set, /api only accepts traffic that
@@ -329,7 +334,12 @@ async function startServer() {
   app.get('/api/python-export', (_req, res) => { const config = storage.getConfig(); const rulesStr = config.rules.filter((r) => r.enabled && r.sourceId && r.targetIds.length).map((r) => `${r.sourceId}:${r.targetIds.join(':')}`).join(','); res.json({ envContent: `# TGForwarder Pro Exported .env\nAPI_ID="${config.apiId || ''}"\nAPI_HASH="${config.apiHash || ''}"\n${config.botToken ? `BOT_TOKEN="${config.botToken}"\n` : ''}FORWARDING_RULES="${rulesStr}"\nREMOVE_FORWARD_SIGNATURE="${config.defaultRemoveSignature ? 'true' : 'false'}"\n`, requirements: 'telethon==1.40.0\npython-dotenv==1.1.1\n', pythonScriptNotice: 'Use python3 telegram_forwarder.py --remove-forward-signature' }); });
 
   if (process.env.NODE_ENV !== 'production') { const vite = await createViteServer({ server: { middlewareMode: true }, appType: 'spa' }); app.use(vite.middlewares); }
-  else { const distPath = path.join(process.cwd(), 'dist'); app.use(express.static(distPath)); app.get('*', (_req, res) => res.sendFile(path.join(distPath, 'index.html'))); }
+  else {
+    const distPath = path.join(process.cwd(), 'dist');
+    // Hashed assets are immutable — cache hard; HTML must revalidate.
+    app.use(express.static(distPath, { setHeaders: (res, filePath) => res.setHeader('Cache-Control', filePath.endsWith('.html') ? 'no-cache' : 'public, max-age=31536000, immutable') }));
+    app.get('*', (_req, res) => { res.setHeader('Cache-Control', 'no-cache'); res.sendFile(path.join(distPath, 'index.html')); });
+  }
   app.listen(PORT, HOST, () => console.log(`[TGForwarder] server listening on ${HOST}:${PORT}`));
 }
 startServer().catch((err) => { console.error('[TGForwarder] Fatal startup error:', err); process.exit(1); });

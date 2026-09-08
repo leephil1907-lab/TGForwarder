@@ -251,12 +251,13 @@ if (!engineProto.__tgforwarderManualReviewV2) {
 
     pending.delete(key);
     savePending();
+    (this as any).broadcast?.('PENDING_UPDATED', { count: pending.size });
     return { success: true, key, sourceId: record.sourceId, sourceMessageId: record.messageId, targetId: record.targetId, targetMessageId: mapping.targetMsgId };
   };
 
   engineProto.discardPendingPost = function (key: string) {
     const removed = pending.delete(key);
-    if (removed) savePending();
+    if (removed) { savePending(); (this as any).broadcast?.('PENDING_UPDATED', { count: pending.size }); }
     return { success: removed };
   };
 
