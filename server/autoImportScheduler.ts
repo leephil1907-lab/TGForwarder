@@ -13,11 +13,9 @@
 import fs from 'fs';
 import path from 'path';
 import { TelegramEngine } from './telegramEngine.js';
-import { getTenantId, runWithTenant } from './tenantContext.js';
 
 export interface AutoImportWatch {
   id: string;
-  tenantId: string;
   sourceId: string;
   sourceTitle: string;
   targetId: string;
@@ -51,61 +49,23 @@ const MAX_WATCHES = 50;
 export class AutoImportScheduler {
   private static instance: AutoImportScheduler;
   private engine: TelegramEngine;
-  private watchesByTenant = new Map<string, Map<string, AutoImportWatch>>();
-  private loadedTenants = new Set<string>();
-  private pathsByTenant = new Map<string, string>();
+  private file: string;
+  private watches = new Map<string, AutoImportWatch>();
   private chain: Promise<void> = Promise.resolve();
   private timer: NodeJS.Timeout | null = null;
   private running = false;
 
-  // ---- per-tenant (multi-user) storage ----
-  private fileFor(t?: string): string {
-    const tid = t ?? getTenantId();
-    let f = this.pathsByTenant.get(tid);
-    if (!f) {
-      const base = process.env.TG_DATA_DIR || path.join(process.cwd(), '.data');
-      f = path.join(base, 'tenants', tid, 'autoimport-watches.json');
-      this.pathsByTenant.set(tid, f);
-    }
-    return f;
-  }
-
-  private ensureLoaded(tid: string): Map<string, AutoImportWatch> {
-    if (!this.loadedTenants.has(tid)) {
-      this.loadedTenants.add(tid);
-      const map = new Map<string, AutoImportWatch>();
-      this.watchesByTenant.set(tid, map);
-      try {
-        const file = this.fileFor(tid);
-        if (fs.existsSync(file)) {
-          const list = JSON.parse(fs.readFileSync(file, 'utf8'));
-          if (Array.isArray(list)) for (const w of list) if (w?.id && w.sourceId && w.targetId) map.set(w.id, w);
-        }
-      } catch (err: any) {
-        console.warn(`[AutoImport] Could not restore watches for tenant ${tid}:`, err?.message || err);
-      }
-    }
-    return this.watchesByTenant.get(tid)!;
-  }
-
-  private currentWatches(): Map<string, AutoImportWatch> {
-    return this.ensureLoaded(getTenantId());
-  }
-
-  private knownTenantIds(): string[] {
-    const ids = new Set<string>(this.loadedTenants);
-    try {
-      const base = process.env.TG_DATA_DIR || path.join(process.cwd(), '.data');
-      const tenantsDir = path.join(base, 'tenants');
-      if (fs.existsSync(tenantsDir)) for (const tid of fs.readdirSync(tenantsDir)) {
-        if (fs.existsSync(path.join(tenantsDir, tid, 'autoimport-watches.json'))) ids.add(tid);
-      }
-    } catch { /* ignore */ }
-    return Array.from(ids);
-  }
-
   private constructor() {
     this.engine = TelegramEngine.getInstance();
+    const base = process.env.TG_DATA_DIR || path.join(process.cwd(), '.data');
+    const dir = path.join(base, 'tenants', 'default');
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+    } catch (err: any) {
+      console.error(`[AutoImport] Data directory is not usable (${dir}): ${err?.message || err}. Attach a writable volume at TG_DATA_DIR (e.g. /data).`);
+    }
+    this.file = path.join(dir, 'autoimport-watches.json');
+    this.load();
     this.timer = setInterval(() => { void this.tick(); }, MASTER_TICK_MS);
     if (typeof this.timer.unref === 'function') this.timer.unref();
   }
@@ -117,15 +77,24 @@ export class AutoImportScheduler {
 
   // ==================== PERSISTENCE ====================
 
+  private load() {
+    try {
+      if (!fs.existsSync(this.file)) return;
+      const list = JSON.parse(fs.readFileSync(this.file, 'utf8'));
+      if (Array.isArray(list)) for (const w of list) if (w?.id && w.sourceId && w.targetId) this.watches.set(w.id, w);
+    } catch (err: any) {
+      console.warn('[AutoImport] Could not restore watches:', err?.message || err);
+    }
+  }
+
   private persist() {
     try {
-      const file = this.fileFor();
-      fs.mkdirSync(path.dirname(file), { recursive: true });
-      const tmp = `${file}.tmp`;
-      fs.writeFileSync(tmp, JSON.stringify(Array.from(this.currentWatches().values()), null, 2), 'utf8');
-      fs.renameSync(tmp, file);
+      fs.mkdirSync(path.dirname(this.file), { recursive: true });
+      const tmp = `${this.file}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify(Array.from(this.watches.values()), null, 2), 'utf8');
+      fs.renameSync(tmp, this.file);
     } catch (err: any) {
-      console.error(`[AutoImport] Could not persist watches for tenant ${getTenantId()}:`, err?.message || err);
+      console.error('[AutoImport] Could not persist watches:', err?.message || err);
     }
   }
 
@@ -136,40 +105,25 @@ export class AutoImportScheduler {
   // ==================== PUBLIC API ====================
 
   public list(): AutoImportWatch[] {
-    return Array.from(this.currentWatches().values()).sort((a, b) => b.createdAt - a.createdAt).map((w) => ({ ...w }));
+    return Array.from(this.watches.values()).sort((a, b) => b.createdAt - a.createdAt).map((w) => ({ ...w }));
   }
 
-  /** Counts for the CURRENT tenant (used inside request context). */
   public summary(): { total: number; active: number } {
-    const all = Array.from(this.currentWatches().values());
+    const all = Array.from(this.watches.values());
     return { total: all.length, active: all.filter((w) => w.enabled).length };
-  }
-
-  /** Aggregated counts across ALL tenants (used by the public /api/health). */
-  public aggregateSummary(): { total: number; active: number } {
-    let total = 0;
-    let active = 0;
-    for (const tid of this.knownTenantIds()) {
-      const all = Array.from(this.ensureLoaded(tid).values());
-      total += all.length;
-      active += all.filter((w) => w.enabled).length;
-    }
-    return { total, active };
   }
 
   public createWatch(input: AutoImportWatchInput): AutoImportWatch {
     const sourceId = String(input.sourceId || '').trim();
     const targetId = String(input.targetId || '').trim();
     if (!sourceId || !targetId) throw new Error('Source and target are required.');
-    const tid = getTenantId();
-    if (Array.from(this.currentWatches().values()).some((w) => w.sourceId === sourceId && w.targetId === targetId)) {
+    if (Array.from(this.watches.values()).some((w) => w.sourceId === sourceId && w.targetId === targetId)) {
       throw new Error('A watcher for this source → target pair already exists.');
     }
     const intervalMinutes = Math.min(Math.max(Math.round(Number(input.intervalMinutes) || 15), 1), 1440);
-    if (this.currentWatches().size >= MAX_WATCHES) throw new Error(`Too many watchers (max ${MAX_WATCHES}).`);
+    if (this.watches.size >= MAX_WATCHES) throw new Error(`Too many watchers (max ${MAX_WATCHES}).`);
     const watch: AutoImportWatch = {
       id: `watch-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-      tenantId: tid,
       sourceId,
       sourceTitle: String(input.sourceTitle || sourceId),
       targetId,
@@ -184,7 +138,7 @@ export class AutoImportScheduler {
       lastImportedCount: 0,
       totalImported: 0
     };
-    this.currentWatches().set(watch.id, watch);
+    this.watches.set(watch.id, watch);
     this.persist();
     this.engine.log({
       level: 'success', category: 'fetcher', title: '⏱️ Auto-Import Watcher Created',
@@ -198,7 +152,7 @@ export class AutoImportScheduler {
   }
 
   public updateWatch(id: string, patch: Partial<Pick<AutoImportWatch, 'enabled' | 'intervalMinutes' | 'targetId' | 'targetTitle'>>): AutoImportWatch {
-    const watch = this.currentWatches().get(id);
+    const watch = this.watches.get(id);
     if (!watch) throw new Error('Watcher not found.');
     if (patch.enabled !== undefined) watch.enabled = Boolean(patch.enabled);
     if (patch.intervalMinutes !== undefined) watch.intervalMinutes = Math.min(Math.max(Math.round(Number(patch.intervalMinutes) || watch.intervalMinutes), 1), 1440);
@@ -209,7 +163,7 @@ export class AutoImportScheduler {
   }
 
   public deleteWatch(id: string): { success: boolean } {
-    const removed = this.currentWatches().delete(id);
+    const removed = this.watches.delete(id);
     if (removed) {
       this.persist();
       this.emit();
@@ -220,7 +174,7 @@ export class AutoImportScheduler {
 
   /** Forces a watch to run immediately (outside its schedule). */
   public async runNow(id: string): Promise<{ success: boolean; imported: number; message: string }> {
-    const watch = this.currentWatches().get(id);
+    const watch = this.watches.get(id);
     if (!watch) throw new Error('Watcher not found.');
     if (!this.engine.isAccountConnected()) throw new Error('Telegram account is not connected.');
     await this.runWatch(watch, Date.now());
@@ -231,23 +185,14 @@ export class AutoImportScheduler {
 
   private async tick(): Promise<void> {
     if (this.running) return;
+    if (!this.engine.isAccountConnected()) return;
     const now = Date.now();
-    const due: AutoImportWatch[] = [];
-    for (const tid of this.knownTenantIds()) {
-      const map = this.ensureLoaded(tid);
-      for (const w of map.values()) {
-        if (w.enabled && (!w.lastRunAt || now - w.lastRunAt >= w.intervalMinutes * 60_000)) due.push(w);
-      }
-    }
+    const due = Array.from(this.watches.values()).filter((w) => w.enabled && (!w.lastRunAt || now - w.lastRunAt >= w.intervalMinutes * 60_000));
     if (!due.length) return;
     this.running = true;
     try {
       for (const watch of due) {
-        // Run each watch inside its owner's tenant so the engine proxy and
-        // storage resolve to that user's isolated workspace.
-        this.chain = this.chain
-          .then(() => runWithTenant(watch.tenantId, () => this.runWatch(watch, Date.now())))
-          .catch(() => { /* errors are recorded per watch */ });
+        this.chain = this.chain.then(() => this.runWatch(watch, Date.now())).catch(() => { /* errors are recorded per watch */ });
       }
       await this.chain;
     } finally {

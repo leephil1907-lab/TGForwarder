@@ -14,7 +14,6 @@
 import fs from 'fs';
 import path from 'path';
 import { TelegramEngine } from './telegramEngine.js';
-import { getTenantId, runWithTenant } from './tenantContext.js';
 
 export type FetcherMediaType = 'text' | 'photo' | 'video' | 'audio' | 'voice' | 'document' | 'sticker' | 'animation' | 'unknown';
 
@@ -183,67 +182,33 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 export class RestrictedFetcher {
   private static instance: RestrictedFetcher;
   private engine: TelegramEngine;
-  private jobsByTenant = new Map<string, Map<string, FetcherJob>>();
-  private queueByTenant = new Map<string, string[]>();
-  private processingTenants = new Set<string>();
-  private loadedTenants = new Set<string>();
-  private pathsByTenant = new Map<string, { dataDir: string; jobsFile: string; downloadsDir: string }>();
+  private dataDir: string;
+  private jobsFile: string;
+  private downloadsDir: string;
+  private jobs = new Map<string, FetcherJob>();
+  private queue: string[] = [];
+  private processing = false;
   private pendingDeletions = new Set<string>();
   private watchdog: NodeJS.Timeout | null = null;
 
-  // ---- per-tenant (multi-user) storage core: each user's jobs/downloads are isolated ----
-  private paths(t?: string): { dataDir: string; jobsFile: string; downloadsDir: string } {
-    const tid = t ?? getTenantId();
-    let p = this.pathsByTenant.get(tid);
-    if (!p) {
-      const base = process.env.TG_DATA_DIR || path.join(process.cwd(), '.data');
-      const dataDir = path.join(base, 'tenants', tid, 'fetcher');
-      p = { dataDir, jobsFile: path.join(dataDir, 'jobs.json'), downloadsDir: path.join(dataDir, 'downloads') };
-      this.pathsByTenant.set(tid, p);
-    }
-    return p;
-  }
-
-  private ensureLoaded(tid: string): Map<string, FetcherJob> {
-    if (!this.loadedTenants.has(tid)) {
-      this.loadedTenants.add(tid);
-      const map = new Map<string, FetcherJob>();
-      this.jobsByTenant.set(tid, map);
-      try {
-        const { jobsFile } = this.paths(tid);
-        if (fs.existsSync(jobsFile)) {
-          const list = JSON.parse(fs.readFileSync(jobsFile, 'utf8'));
-          if (Array.isArray(list)) for (const job of list) if (job?.id && Array.isArray(job.items)) map.set(job.id, { ...job, cancelRequested: false });
-        }
-      } catch (err: any) {
-        console.warn(`[RestrictedFetcher] Could not restore jobs for tenant ${tid}:`, err?.message || err);
-      }
-    }
-    return this.jobsByTenant.get(tid)!;
-  }
-
-  private jobsMap(): Map<string, FetcherJob> {
-    return this.ensureLoaded(getTenantId());
-  }
-
-  private jobQueue(): string[] {
-    const tid = getTenantId();
-    let q = this.queueByTenant.get(tid);
-    if (!q) { q = []; this.queueByTenant.set(tid, q); }
-    return q;
-  }
-
   private constructor() {
     this.engine = TelegramEngine.getInstance();
+    const base = process.env.TG_DATA_DIR || path.join(process.cwd(), '.data');
+    this.dataDir = path.join(base, 'fetcher');
+    this.jobsFile = path.join(this.dataDir, 'jobs.json');
+    this.downloadsDir = path.join(this.dataDir, 'downloads');
+    try {
+      fs.mkdirSync(this.downloadsDir, { recursive: true });
+    } catch (err: any) {
+      // A missing/unwritable data directory must not take the whole service
+      // down. The boot log and /api/health surface the storage problem; fetch
+      // jobs that need files will report this error per item instead.
+      console.error(`[RestrictedFetcher] Data directory is not usable (${this.dataDir}): ${err?.message || err}. Attach a writable volume at TG_DATA_DIR (e.g. /data) or downloads/jobs cannot persist.`);
+    }
+    this.loadJobs();
     this.watchdog = setInterval(() => {
-      for (const tid of Array.from(this.queueByTenant.keys())) {
-        if (this.processingTenants.has(tid)) continue;
-        const q = this.queueByTenant.get(tid);
-        if (!q || q.length === 0) continue;
-        let connected = false;
-        try { runWithTenant(tid, () => { connected = this.engine.isAccountConnected(); }); } catch { continue; }
-        if (!connected) continue;
-        void runWithTenant(tid, () => this.runQueue());
+      if (!this.processing && this.queue.length > 0 && this.engine.isAccountConnected()) {
+        void this.runQueue();
       }
     }, 8000);
     if (typeof this.watchdog.unref === 'function') this.watchdog.unref();
@@ -258,18 +223,33 @@ export class RestrictedFetcher {
 
   // ==================== PERSISTENCE ====================
 
+  private loadJobs() {
+    try {
+      if (!fs.existsSync(this.jobsFile)) return;
+      if (!fs.existsSync(this.dataDir)) return;
+      const list = JSON.parse(fs.readFileSync(this.jobsFile, 'utf8'));
+      if (!Array.isArray(list)) return;
+      for (const job of list) {
+        if (job?.id && Array.isArray(job.items)) {
+          this.jobs.set(job.id, { ...job, cancelRequested: false });
+        }
+      }
+    } catch (err: any) {
+      console.warn('[RestrictedFetcher] Could not restore jobs:', err?.message || err);
+    }
+  }
+
   private persist() {
     try {
-      const { dataDir, jobsFile } = this.paths();
-      fs.mkdirSync(dataDir, { recursive: true });
-      const list = Array.from(this.jobsMap().values())
+      fs.mkdirSync(this.dataDir, { recursive: true });
+      const list = Array.from(this.jobs.values())
         .sort((a, b) => b.createdAt - a.createdAt)
         .slice(0, MAX_JOBS_KEPT);
-      const tmp = `${jobsFile}.tmp`;
+      const tmp = `${this.jobsFile}.tmp`;
       fs.writeFileSync(tmp, JSON.stringify(list, null, 2), 'utf8');
-      fs.renameSync(tmp, jobsFile);
+      fs.renameSync(tmp, this.jobsFile);
     } catch (err: any) {
-      console.error(`[RestrictedFetcher] Error persisting jobs for tenant ${getTenantId()}:`, err?.message || err);
+      console.error('[RestrictedFetcher] Error persisting jobs:', err?.message || err);
     }
   }
 
@@ -365,8 +345,8 @@ export class RestrictedFetcher {
 
     this.finalize(job);
     job.status = 'queued';
-    this.jobsMap().set(job.id, job);
-    this.jobQueue().push(job.id);
+    this.jobs.set(job.id, job);
+    this.queue.push(job.id);
     this.persist();
 
     this.engine.log({
@@ -376,25 +356,25 @@ export class RestrictedFetcher {
     });
     this.emit(job);
 
-    if (!this.processingTenants.has(getTenantId())) void runWithTenant(getTenantId(), () => this.runQueue());
+    if (!this.processing) void this.runQueue();
     return this.sanitizeJob(job);
   }
 
   public getJobs(limit = 30): FetcherJob[] {
     this.kickIfIdle();
-    return Array.from(this.jobsMap().values())
+    return Array.from(this.jobs.values())
       .sort((a, b) => b.createdAt - a.createdAt)
       .slice(0, Math.min(Math.max(limit, 1), 100))
       .map((j) => this.sanitizeJob(j));
   }
 
   public getJob(id: string): FetcherJob | null {
-    const job = this.jobsMap().get(id);
+    const job = this.jobs.get(id);
     return job ? this.sanitizeJob(job) : null;
   }
 
   public cancelJob(id: string): { success: boolean; message: string } {
-    const job = this.jobsMap().get(id);
+    const job = this.jobs.get(id);
     if (!job) return { success: false, message: 'Job not found.' };
     if (job.status !== 'queued' && job.status !== 'running') return { success: false, message: `Job is already ${job.status}.` };
     job.cancelRequested = true;
@@ -406,7 +386,7 @@ export class RestrictedFetcher {
   }
 
   public retryJob(id: string): { success: boolean; message: string } {
-    const job = this.jobsMap().get(id);
+    const job = this.jobs.get(id);
     if (!job) return { success: false, message: 'Job not found.' };
     if (job.status === 'running' || job.status === 'queued') return { success: false, message: 'Job is still active.' };
     if (!this.engine.isAccountConnected()) throw new Error('Telegram account is not connected.');
@@ -423,16 +403,16 @@ export class RestrictedFetcher {
     job.status = job.items.some((i) => i.status === 'queued') ? 'queued' : job.status;
     job.cancelRequested = false;
     job.updatedAt = Date.now();
-    if (job.status === 'queued') this.jobQueue().push(job.id);
+    if (job.status === 'queued') this.queue.push(job.id);
     this.persist();
     this.emit(job);
     this.engine.log({ level: 'info', category: 'fetcher', title: '🔁 Fetch Job Retry Queued', message: `Requeued ${retryable.filter((i) => i.status === 'queued').length} item(s) for job ${id}.` });
-    if (!this.processingTenants.has(getTenantId())) void runWithTenant(getTenantId(), () => this.runQueue());
+    if (!this.processing) void this.runQueue();
     return { success: true, message: 'Retry queued.' };
   }
 
   public deleteJob(id: string): { success: boolean; message: string } {
-    const job = this.jobsMap().get(id);
+    const job = this.jobs.get(id);
     if (!job) return { success: false, message: 'Job not found.' };
     if (job.status === 'running' || job.status === 'queued') {
       job.cancelRequested = true;
@@ -446,44 +426,29 @@ export class RestrictedFetcher {
   }
 
   private removeJobData(job: FetcherJob) {
-    this.jobsMap().delete(job.id);
-    const q = this.jobQueue();
-    const idx = q.indexOf(job.id);
-    if (idx >= 0) q.splice(idx, 1);
+    this.jobs.delete(job.id);
+    this.queue = this.queue.filter((q) => q !== job.id);
     try {
-      fs.rmSync(path.join(this.paths().downloadsDir, job.id), { recursive: true, force: true });
+      fs.rmSync(path.join(this.downloadsDir, job.id), { recursive: true, force: true });
     } catch { /* ignore */ }
     this.persist();
   }
 
   /** Absolute path of a downloadable file, or null when unavailable. */
   public getDownloadPath(jobId: string, itemId: string, file: string): string | null {
-    const job = this.jobsMap().get(jobId);
+    const job = this.jobs.get(jobId);
     if (!job) return null;
     const item = job.items.find((i) => i.id === itemId);
     if (!item || !item.downloadFiles.includes(file)) return null;
     const safe = safeFileName(file);
-    const full = path.join(this.paths().downloadsDir, jobId, itemId, safe);
-    if (!full.startsWith(this.paths().downloadsDir) || !fs.existsSync(full)) return null;
+    const full = path.join(this.downloadsDir, jobId, itemId, safe);
+    if (!full.startsWith(this.downloadsDir) || !fs.existsSync(full)) return null;
     return full;
   }
 
   public resumeInterruptedJobs() {
     let resumed = 0;
-    const base = process.env.TG_DATA_DIR || path.join(process.cwd(), '.data');
-    const tenantsDir = path.join(base, 'tenants');
-    let tenantIds: string[] = [];
-    try { tenantIds = fs.existsSync(tenantsDir) ? fs.readdirSync(tenantsDir) : []; } catch { tenantIds = []; }
-    for (const tid of tenantIds) {
-      if (!fs.existsSync(path.join(tenantsDir, tid, 'fetcher', 'jobs.json'))) continue;
-      resumed += runWithTenant(tid, () => this.requeueInterruptedForTenant());
-    }
-    if (resumed) console.log(`[RestrictedFetcher] Requeued ${resumed} interrupted job(s) across tenants.`);
-  }
-
-  private requeueInterruptedForTenant(): number {
-    let resumed = 0;
-    for (const job of this.jobsMap().values()) {
+    for (const job of this.jobs.values()) {
       if (job.status === 'running' || job.status === 'queued') {
         for (const item of job.items) {
           if (item.status === 'processing') {
@@ -494,7 +459,7 @@ export class RestrictedFetcher {
         this.finalize(job);
         if (job.items.some((i) => i.status === 'queued')) {
           job.status = 'queued';
-          this.jobQueue().push(job.id);
+          this.queue.push(job.id);
           resumed++;
         } else {
           this.finalize(job);
@@ -502,13 +467,14 @@ export class RestrictedFetcher {
         job.updatedAt = Date.now();
       }
     }
-    if (resumed) this.persist();
-    return resumed;
+    if (resumed) {
+      this.persist();
+      console.log(`[RestrictedFetcher] Requeued ${resumed} interrupted job(s).`);
+    }
   }
 
   private kickIfIdle() {
-    const tid = getTenantId();
-    if (!this.processingTenants.has(tid) && this.jobQueue().length > 0 && this.engine.isAccountConnected()) {
+    if (!this.processing && this.queue.length > 0 && this.engine.isAccountConnected()) {
       void this.runQueue();
     }
   }
@@ -516,14 +482,12 @@ export class RestrictedFetcher {
   // ==================== WORKER ====================
 
   private async runQueue(): Promise<void> {
-    const tid = getTenantId();
-    if (this.processingTenants.has(tid)) return;
-    this.processingTenants.add(tid);
-    const queue = this.jobQueue();
+    if (this.processing) return;
+    this.processing = true;
     try {
-      while (queue.length > 0) {
-        const jobId = queue.shift()!;
-        const job = this.jobsMap().get(jobId);
+      while (this.queue.length > 0) {
+        const jobId = this.queue.shift()!;
+        const job = this.jobs.get(jobId);
         if (!job || job.cancelRequested) {
           if (job && this.pendingDeletions.has(jobId)) { this.pendingDeletions.delete(jobId); this.removeJobData(job); }
           continue;
@@ -532,7 +496,7 @@ export class RestrictedFetcher {
         if (this.pendingDeletions.has(jobId)) { this.pendingDeletions.delete(jobId); this.removeJobData(job); }
       }
     } finally {
-      this.processingTenants.delete(tid);
+      this.processing = false;
     }
   }
 
@@ -777,7 +741,7 @@ export class RestrictedFetcher {
   private ensureItemDir(jobId: string, itemId: string): string {
     // Files live in downloads/<jobId>/<itemId>/ — the download endpoint resolves
     // paths with the exact same layout (see getDownloadPath).
-    const dir = path.join(this.paths().downloadsDir, jobId, itemId);
+    const dir = path.join(this.downloadsDir, jobId, itemId);
     try {
       fs.mkdirSync(dir, { recursive: true });
     } catch (err: any) {

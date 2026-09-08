@@ -8,7 +8,6 @@ import { StatsCards } from './components/StatsCards';
 import { PythonExporter } from './components/PythonExporter';
 import { RateLimitModal } from './components/RateLimitModal';
 import { AccessGate } from './components/AccessGate';
-import { AdminPanel } from './components/AdminPanel';
 import { PostHistory } from './components/PostHistory';
 import { PendingPosts } from './components/PendingPosts';
 import { FetcherPanel } from './components/FetcherPanel';
@@ -20,7 +19,6 @@ export default function App() {
   const [authOpen,setAuthOpen]=useState(false);
   const [rateOpen,setRateOpen]=useState(false);
   const [hasToken,setHasToken]=useState(()=>Boolean(getStoredToken()));
-  const [identity,setIdentity]=useState<{username:string;role:string;isAdmin:boolean}|null>(null);
   const [gateError,setGateError]=useState<string|null>(null);
   const [authState,setAuthState]=useState<AuthState>({status:'disconnected',userProfile:null});
   const [config,setConfig]=useState<SafeConfig|null>(null);
@@ -55,32 +53,10 @@ export default function App() {
   const saveRateLimit=async(v:RateLimitConfig)=>{const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({globalRateLimit:v})});const d=await r.json();if(!r.ok)throw new Error(d.error||'Failed to save rate limit');setConfig(d);};
   const accounts:SafeTelegramAccount[]=config?.accounts?.length?config.accounts:(authState.userProfile?[{id:authState.userProfile.id,name:authState.userProfile.firstName,username:authState.userProfile.username,phone:authState.userProfile.phone||authState.phoneNumber,status:'connected',userProfile:authState.userProfile}]:[]);
   const rate=config?.globalRateLimit||{minDelayMs:1200,maxMessagesPerMinute:25,autoSleepOnFloodWait:true,retryAttempts:3,exponentialBackoff:true};
-  useEffect(()=>{
-    if(!hasToken){setIdentity(null);return;}
-    let cancelled=false;
-    (async()=>{
-      try{
-        const res=await fetch('/api/auth/me');
-        if(res.status===401){clearStoredToken();setHasToken(false);setGateError('Your session has expired. Please sign in again.');return;}
-        const data=await res.json().catch(()=>null);
-        if(!cancelled&&data?.success){
-          const isAdmin=data.mode==='admin'||data.user?.role==='admin';
-          setIdentity({username:String(data.user?.username||'admin'),role:String(data.user?.role||'user'),isAdmin});
-        }
-      }catch{ /* server unreachable — keep previous identity */ }
-    })();
-    return()=>{cancelled=true;};
-  },[hasToken]);
-
-  const handleSignOut=async()=>{
-    try{ if(identity&&!identity.isAdmin){ await fetch('/api/auth/user-logout',{method:'POST'}); } }catch{ /* ignore */ }
-    clearStoredToken();setIdentity(null);setHasToken(false);setGateError(null);
-  };
-
   if(!hasToken)return <AccessGate error={gateError} onUnlock={()=>{setGateError(null);setHasToken(true);}}/>;
 
   return <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-['Plus_Jakarta_Sans']">
-    <Navbar authState={authState} isEngineRunning={Boolean(config?.isEngineRunning)} stats={stats} activeTab={activeTab} setActiveTab={setActiveTab} onOpenAuth={()=>setAuthOpen(true)} onToggleEngine={toggleEngine} isEngineLoading={engineLoading} identity={identity} onSignOut={handleSignOut}/>
+    <Navbar authState={authState} isEngineRunning={Boolean(config?.isEngineRunning)} stats={stats} activeTab={activeTab} setActiveTab={setActiveTab} onOpenAuth={()=>setAuthOpen(true)} onToggleEngine={toggleEngine} isEngineLoading={engineLoading}/>
     <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
       {activeTab==='funnel'&&<><PendingPosts/><RulesManager rules={config?.rules||[]} accounts={accounts} discoveredChats={chats} isEngineRunning={Boolean(config?.isEngineRunning)} onRefreshRules={fetchData} onOpenDiscovery={()=>setActiveTab('chats')} quickSourceChat={quickSource} quickTargetChat={quickTarget} onClearQuickSelection={()=>{setQuickSource(null);setQuickTarget(null);}}/></>}
       {activeTab==='fetcher'&&<FetcherPanel chats={chats} authState={authState} onOpenAuth={()=>setAuthOpen(true)} onScanChats={scan}/>} 
@@ -88,8 +64,7 @@ export default function App() {
       {activeTab==='history'&&<PostHistory chats={chats} authState={authState}/>} 
       {activeTab==='console'&&<LiveConsole logs={logs} onClearLogs={clearLogs} isEngineRunning={Boolean(config?.isEngineRunning)} authState={authState}/>} 
       {activeTab==='stats'&&<StatsCards stats={stats} rules={config?.rules||[]} rateLimit={rate} isEngineRunning={Boolean(config?.isEngineRunning)} onOpenRateLimit={()=>setRateOpen(true)}/>} 
-      {activeTab==='python'&&<PythonExporter config={config} rules={config?.rules||[]}/>}
-      {activeTab==='admin'&&identity?.isAdmin&&<AdminPanel/>} 
+      {activeTab==='python'&&<PythonExporter config={config} rules={config?.rules||[]}/>} 
     </main>
     <AuthModal isOpen={authOpen} onClose={()=>setAuthOpen(false)} authState={authState} config={config} onRefreshAuth={fetchData}/>
     <RateLimitModal isOpen={rateOpen} onClose={()=>setRateOpen(false)} rateLimit={rate} onSaveRateLimit={saveRateLimit}/>

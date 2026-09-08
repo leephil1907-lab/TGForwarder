@@ -70,18 +70,12 @@ if it says `NOT writable`, the volume is missing or `TG_DATA_DIR` is wrong.
 - Each fetched item has an **Edit** action: preview the original media, edit the
   caption/text, choose a destination and publish.
 
-## Multi-User Access (invite-only)
+## Access
 
-TGForwarder supports multiple isolated users on one deployment:
-
-- **Administrator** — the admin entry is hidden from the public page: open the gate with `#admin` in the URL (e.g. `https://your-app.example/#admin`) and sign in with the server's `APP_AUTH_TOKEN`. Regular visitors see only Sign in / Register and cannot tell that an admin console exists. The admin keeps the original `default` workspace (existing rules, session and data are untouched) and manages invites and users under the **Access Control** tab.
-- **Telegram-first sign-in (no passwords)** — there is no site username or password. A new user opens the **invite link** (`https://your-app/?invite=TGF-…`, copy button in the Access Control tab), connects their own Telegram account (API ID + API Hash from my.telegram.org, phone, login code), and the site reads their **Telegram @username as their account identity**. The invite is consumed in that moment (strictly one-time).
-- **Returning users** — their session lasts 30 days; after that they just connect Telegram again with the same phone + code and are recognized (no invite needed). 2FA Cloud Password is requested **only** when the account actually has one — everyone else connects right after the phone-code check.
-- **Users** — each registered user gets a fully isolated workspace under `data/tenants/<tenantId>/`: their own Telegram session, forwarding rules, fetch jobs + downloads, watchers, pending posts, mappings, logs and stats. Users can never see each other's data. Passwords are stored as `scrypt` hashes; sessions are sha256-hashed tokens with a 30-day TTL.
-- **Admin controls** — overview cards (users / active / invites), per-user **Disable** (signs them out immediately and blocks re-login), **Force sign-out** (revokes all their sessions without disabling), and re-enable at any time.
-- **Appearance** — light/dark theme toggle in the navbar (persisted per browser) and Telegram-brand blue across the UI.
-
-No extra configuration is needed: multi-user is always on, and the master token remains the admin identity.
+Single-operator deployment: the dashboard is unlocked with the server's `APP_AUTH_TOKEN`
+(set it in the environment, or let the server generate one and print it on boot).
+Connect your Telegram account (API ID + API Hash, phone, login code — 2FA password
+only if your account has one) and everything runs in your workspace.
 
 ## Posting Modes: Auto vs Manual (per rule)
 

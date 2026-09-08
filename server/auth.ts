@@ -3,8 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import type { Request, Response, NextFunction } from 'express';
-import { runWithTenant, DEFAULT_TENANT } from './tenantContext.js';
-import { userRegistry } from './users.js';
+import { createTenantId, runWithTenant, DEFAULT_TENANT } from './tenantContext.js';
 
 const DATA_DIR = process.env.TG_DATA_DIR || path.join(process.cwd(), '.data');
 const TOKEN_FILE = path.join(DATA_DIR, 'auth_token.txt');
@@ -16,19 +15,4 @@ function safeEqual(a:string,b:string){const A=Buffer.from(a),B=Buffer.from(b);re
 function parseCookies(header?:string):Record<string,string>{const out:Record<string,string>={};for(const part of String(header||'').split(';')){const i=part.indexOf('=');if(i<=0)continue;const k=part.slice(0,i).trim(),v=part.slice(i+1).trim();try{out[k]=decodeURIComponent(v);}catch{out[k]=v;}}return out;}
 export function getSessionId(req:Request){const v=parseCookies(req.headers.cookie)[SESSION_COOKIE];return v&&/^[a-f0-9]{48}$/.test(v)?v:'';}
 
-/**
- * Multi-user authentication:
- *  1. A user session token (issued by /api/auth/user-login or invite signup)
- *     runs the request inside that user's own isolated tenant — their own
- *     Telegram session, rules, jobs, logs. Users never see each other.
- *  2. The master APP_AUTH_TOKEN is the ADMIN: it runs in the 'default' tenant
- *     (the operator's original workspace) and may manage invites and users.
- *  3. Anything else → 401.
- */
-export function createAuthMiddleware(token:string){return(req:Request,res:Response,next:NextFunction)=>{const header=req.headers['authorization'];const headerToken=typeof header==='string'&&header.startsWith('Bearer ')?header.slice(7).trim():undefined;const queryToken=typeof req.query.token==='string'?req.query.token:undefined;const provided=headerToken||queryToken;if(!provided)return res.status(401).json({error:'Unauthorized. Sign in or provide a valid access token.'});
-// 1. Registered user session → own tenant.
-const user=userRegistry.validateSession(provided);
-if(user){(req as any).userId=user.id;(req as any).role=user.role;(req as any).tenantId=user.tenantId;(req as any).username=user.username;return runWithTenant(user.tenantId,()=>next());}
-// 2. Master admin token → default (admin) tenant.
-if(safeEqual(provided,token)){(req as any).userId='admin';(req as any).role='admin';(req as any).username='admin';(req as any).tenantId=DEFAULT_TENANT;return runWithTenant(DEFAULT_TENANT,()=>next());}
-return res.status(401).json({error:'Unauthorized. Invalid or expired credentials.'});};}
+export function createAuthMiddleware(token:string){return(req:Request,res:Response,next:NextFunction)=>{const header=req.headers['authorization'];const headerToken=typeof header==='string'&&header.startsWith('Bearer ')?header.slice(7).trim():undefined;const queryToken=typeof req.query.token==='string'?req.query.token:undefined;const provided=headerToken||queryToken;if(!provided||!safeEqual(provided,token))return res.status(401).json({error:'Unauthorized. A valid access token is required.'});let sessionId=getSessionId(req);if(!sessionId){sessionId=createTenantId();res.setHeader('Set-Cookie',`${SESSION_COOKIE}=${encodeURIComponent(sessionId)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${SESSION_MAX_AGE_SECONDS}${process.env.NODE_ENV==='production'?'; Secure':''}`);}(req as any).tenantId=sessionId;return runWithTenant(DEFAULT_TENANT,()=>next());};}
