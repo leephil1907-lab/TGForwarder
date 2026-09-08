@@ -88,9 +88,10 @@ try {
             if (body.length > 150 * 1024 * 1024) return res.status(413).json({ error: 'This Telegram media file is too large for in-browser preview.' });
             const range = parseRange(req.headers.range, body.length);
             const filename = meta.fileName ? meta.fileName.replace(/["\r\n]/g, '') : '';
+            const download = req.query?.dl === '1';
             res.setHeader('Accept-Ranges', 'bytes');
             res.setHeader('Cache-Control', 'private, max-age=60');
-            res.setHeader('Content-Disposition', `inline${filename ? `; filename="${filename}"` : ''}`);
+            res.setHeader('Content-Disposition', `${download ? 'attachment' : 'inline'}${filename ? `; filename="${filename}"` : ''}`);
             if (range) {
               const chunk = body.subarray(range.start, range.end + 1);
               res.status(206); res.setHeader('Content-Type', mime); res.setHeader('Content-Length', String(chunk.length)); res.setHeader('Content-Range', `bytes ${range.start}-${range.end}/${body.length}`); return res.end(chunk);

@@ -7,6 +7,7 @@ import {
 import { AuthState, DiscoveredChat, FetcherJob, FetcherItem, FetcherMediaType } from '../types';
 import { withTokenParam } from '../lib/authToken';
 import { AutoImportPanel } from './AutoImportPanel';
+import { ChannelCrawler } from './ChannelCrawler';
 
 interface Props {
   chats: DiscoveredChat[];
@@ -249,6 +250,9 @@ export const FetcherPanel: React.FC<Props> = ({ chats, authState, onOpenAuth, on
           </div>
         </div>
       </div>
+
+      {/* Channel media crawler — browse a source's history and download/deliver its files */}
+      <ChannelCrawler chats={chats} />
 
       {/* New job */}
       <div className="p-4 sm:p-5 rounded-2xl bg-slate-900 border border-slate-800 shadow-xl space-y-4">

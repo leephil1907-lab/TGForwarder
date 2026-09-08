@@ -10,6 +10,7 @@ import { restrictedFetcher } from './server/restrictedFetcher.js';
 import { autoImportScheduler } from './server/autoImportScheduler.js';
 import { userRegistry } from './server/users.js';
 import { runWithTenant, getTenantId } from './server/tenantContext.js';
+import { engineeringReUpload } from './server/engineeringForward.js';
 import fs from 'fs';
 
 const clearEngineLogs = (engine: TelegramEngine) => {
@@ -302,8 +303,18 @@ async function startServer() {
         try {
           const targetEntity = await (engine as any).resolveEntity(targetId);
           let sent: any;
-          if (sourceMessage.media) sent = await client.sendFile(targetEntity, { file: sourceMessage.media, caption: finalText });
-          else sent = await client.sendMessage(targetEntity, { message: finalText });
+          try {
+            if (sourceMessage.media) sent = await client.sendFile(targetEntity, { file: sourceMessage.media, caption: finalText });
+            else sent = await client.sendMessage(targetEntity, { message: finalText });
+          } catch (directErr: any) {
+            // Engineering fallback: protected/restricted media — download via the
+            // session and re-upload as a fresh file (save-restricted-bot method).
+            if (!sourceMessage.media) throw directErr;
+            (engine as any).log?.({ level: 'warn', category: 'forward', title: '🛠️ ENGINEERING RE-UPLOAD: Downloading from source', message: `Direct send failed (${directErr.message || 'telegram error'}). Downloading and re-uploading as a fresh file.`, sourceId: String(sourceId), targetId });
+            const { sent: reUploaded } = await engineeringReUpload(engine, sourceMessage, targetEntity, { caption: finalText });
+            sent = reUploaded;
+            (engine as any).log?.({ level: 'info', category: 'forward', title: '🛠️ ENGINEERING RE-UPLOAD: Delivered', message: `Message ${messageId} delivered via session download + fresh re-upload.`, sourceId: String(sourceId), targetId });
+          }
           results.push({ targetId, success: true, targetMessageId: sent?.id ?? null });
         } catch (err: any) { results.push({ targetId, success: false, error: err.message || 'Telegram send failed' }); }
       }
@@ -315,6 +326,45 @@ async function startServer() {
   });
 
   // ==================== RESTRICTED FETCHER (integrated save-restricted-bot worker) ====================
+  // ==================== CHANNEL MEDIA CRAWLER ====================
+  // Crawls a source channel's history and lists every media file (metadata
+  // only — downloads stream on demand through the session via /api/history/media).
+  app.get('/api/fetcher/crawl', async (req, res) => {
+    try {
+      const sourceId = String(req.query.sourceId || '').trim();
+      const limit = Math.min(Math.max(parseInt(String(req.query.limit || '100'), 10) || 100, 1), 200);
+      const offsetIdRaw = String(req.query.offsetId || '').trim();
+      const offsetId = offsetIdRaw ? Number(offsetIdRaw) : 0;
+      if (!sourceId) return res.status(400).json({ error: 'sourceId is required.' });
+      const entity = await (engine as any).resolveEntity(sourceId);
+      const client = getClient(engine);
+      const messages = await client.getMessages(entity, { limit: limit * 2, offsetId });
+      const items: any[] = [];
+      for (const m of messages) {
+        if (!m || !m.media || m.action) continue;
+        const className = String(m.media?.className || '');
+        if (className === 'MessageMediaWebPage' || className === 'MessageMediaContact') continue;
+        const doc = m.document ? { size: Number(m.document.size || 0), mimeType: String(m.document.mimeType || ''), attributes: m.document.attributes || [] } : null;
+        const fileName = doc?.attributes?.find?.((a: any) => a.className === 'DocumentAttributeFilename')?.fileName || '';
+        const size = doc?.size || (className === 'MessageMediaPhoto' ? 0 : 0);
+        items.push({
+          messageId: Number(m.id),
+          date: m.date ? Number(m.date) * 1000 : null,
+          type: className === 'MessageMediaPhoto' ? 'photo' : /Video/.test(className) ? 'video' : /Audio/.test(className) ? 'audio' : /Voice/.test(className) ? 'voice' : /Sticker/.test(className) ? 'sticker' : 'document',
+          fileName: String(fileName || '').slice(0, 120),
+          mimeType: doc?.mimeType || (className === 'MessageMediaPhoto' ? 'image/jpeg' : ''),
+          size,
+          caption: String(m.message || '').slice(0, 160),
+          mediaUrl: `/api/history/media?sourceId=${encodeURIComponent(sourceId)}&messageId=${Number(m.id)}`,
+          thumbUrl: `/api/history/media/thumbnail?sourceId=${encodeURIComponent(sourceId)}&messageId=${Number(m.id)}`
+        });
+        if (items.length >= limit) break;
+      }
+      const last = messages.filter((m: any) => m?.id).map((m: any) => Number(m.id)).pop();
+      res.json({ success: true, sourceId, count: items.length, items, nextOffsetId: last ?? null, hasMore: Boolean(last) && items.length >= limit });
+    } catch (err: any) { res.status(500).json({ error: err.message || 'Unable to crawl the channel history.' }); }
+  });
+
   app.get('/api/fetcher/jobs', (req, res) => { const limit = req.query.limit ? parseInt(String(req.query.limit), 10) : 30; res.json({ success: true, jobs: restrictedFetcher.getJobs(limit) }); });
   app.post('/api/fetcher/jobs', (req, res) => { try { const { links, sendToTelegram, saveForDownload, targetId, targetTitle } = req.body || {}; const job = restrictedFetcher.createJob({ links, sendToTelegram: Boolean(sendToTelegram), saveForDownload: Boolean(saveForDownload), targetId, targetTitle }); res.json({ success: true, job }); } catch (err: any) { res.status(400).json({ success: false, error: err.message || 'Failed to create fetch job.' }); } });
   app.get('/api/fetcher/jobs/:id', (req, res) => { const job = restrictedFetcher.getJob(decodeURIComponent(req.params.id)); if (!job) return res.status(404).json({ success: false, error: 'Job not found.' }); res.json({ success: true, job }); });

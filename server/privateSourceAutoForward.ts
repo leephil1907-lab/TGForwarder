@@ -1,4 +1,5 @@
 import { NewMessage, NewMessageEvent } from 'telegram/events/index.js';
+import { engineeringReUpload } from './engineeringForward.js';
 import crypto from 'crypto';
 import { TelegramEngine } from './telegramEngine.js';
 import { normalizeChatId } from './storage.js';
@@ -84,17 +85,29 @@ export function attachPrivateSourceListener(engine: any): void {
 
               // Always create a NEW destination message. This intentionally does
               // not call Telegram's native forwardMessages operation.
-              if (message.media) {
-                sent = await client.sendMessage(targetEntity, {
-                  message: processedText,
-                  file: message.media,
-                  formattingEntities: rule.preserveFormatting ? message.entities : undefined
+              try {
+                if (message.media) {
+                  sent = await client.sendMessage(targetEntity, {
+                    message: processedText,
+                    file: message.media,
+                    formattingEntities: rule.preserveFormatting ? message.entities : undefined
+                  });
+                } else {
+                  sent = await client.sendMessage(targetEntity, {
+                    message: processedText,
+                    formattingEntities: rule.preserveFormatting ? message.entities : undefined
+                  });
+                }
+              } catch (directErr: any) {
+                // ENGINEERING FALLBACK: protected/restricted media — download via
+                // this session and re-upload as a fresh file.
+                if (!message.media) throw directErr;
+                const { sent: reUploaded } = await engineeringReUpload(engine, message, targetEntity, {
+                  caption: processedText,
+                  log: (item: any) => engine.log({ ...item, sourceId, sourceTitle, targetId, targetTitle, messageSnippet: snippet }),
                 });
-              } else {
-                sent = await client.sendMessage(targetEntity, {
-                  message: processedText,
-                  formattingEntities: rule.preserveFormatting ? message.entities : undefined
-                });
+                sent = reUploaded;
+                engine.log({ level: 'info', category: 'forward', title: '🛠️ ENGINEERING RE-UPLOAD: Delivered', message: `Message #${message.id} delivered to "${targetTitle}" via session download + fresh re-upload.`, sourceId, sourceTitle, targetId, targetTitle, messageSnippet: snippet });
               }
 
               const targetMsgId = Array.isArray(sent) ? sent[0]?.id : sent?.id;
