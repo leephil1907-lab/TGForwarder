@@ -251,10 +251,11 @@ async function startServer() {
         if (className === 'MessageMediaWebPage' || className === 'MessageMediaContact') continue;
         const doc = m.document ? { size: Number(m.document.size || 0), mimeType: String(m.document.mimeType || ''), attributes: m.document.attributes || [] } : null;
         const fileName = doc?.attributes?.find?.((a: any) => a.className === 'DocumentAttributeFilename')?.fileName || '';
+        const isRoundNote = Boolean(doc?.attributes?.some?.((a: any) => a.className === 'DocumentAttributeVideo' && a.roundMessage));
         items.push({
           messageId: Number(m.id),
           date: m.date ? Number(m.date) * 1000 : null,
-          type: className === 'MessageMediaPhoto' ? 'photo' : /Video/.test(className) ? 'video' : /Audio/.test(className) ? 'audio' : /Voice/.test(className) ? 'voice' : /Sticker/.test(className) ? 'sticker' : 'document',
+          type: className === 'MessageMediaPhoto' ? 'photo' : isRoundNote || /Video/.test(className) ? 'video' : /Audio/.test(className) ? 'audio' : /Voice/.test(className) ? 'voice' : /Sticker/.test(className) ? 'sticker' : 'document',
           fileName: String(fileName || '').slice(0, 120),
           mimeType: doc?.mimeType || (className === 'MessageMediaPhoto' ? 'image/jpeg' : ''),
           size: doc?.size || 0,

@@ -83,12 +83,23 @@ async function mirrorNow(engine: any, message: any, info: { sourceId: string; so
     const tmp = path.join(dir, `msg${info.messageId}-${Date.now()}.bin`);
     await engine.client.downloadMedia(message, { outputFile: tmp });
     try {
+      // Choose the Bot API method from the REAL media type: photos inline,
+      // videos stream inline, round video notes stay round (sendVideoNote),
+      // everything else goes as a document.
+      const attrs = Array.isArray(message?.document?.attributes) ? message.document.attributes : [];
+      const isRoundNote = attrs.some((a: any) => a?.className === 'DocumentAttributeVideo' && a?.roundMessage);
+      const mime = String(message?.document?.mimeType || message?.media?.mimeType || '').toLowerCase();
+      let method = 'sendDocument';
+      if (className === 'MessageMediaPhoto' || mime.startsWith('image/')) method = 'sendPhoto';
+      else if (isRoundNote) method = 'sendVideoNote';
+      else if (mime.startsWith('video/')) method = 'sendVideo';
+      const field = method === 'sendPhoto' ? 'photo' : method === 'sendVideo' ? 'video' : method === 'sendVideoNote' ? 'video_note' : 'document';
       const form = new FormData();
       form.append('chat_id', CHAT_ID);
-      form.append('caption', caption.slice(0, 1024));
+      if (method === 'sendVideo') form.append('supports_streaming', 'true');
+      if (method !== 'sendVideoNote') form.append('caption', caption.slice(0, 1024));
       const bytes = fs.readFileSync(tmp);
-      const method = className === 'MessageMediaPhoto' ? 'sendPhoto' : /Video/.test(className) ? 'sendVideo' : 'sendDocument';
-      form.append(method === 'sendPhoto' ? 'photo' : method === 'sendVideo' ? 'video' : 'document', new Blob([bytes]), `msg-${info.messageId}.mp4`);
+      form.append(field, new Blob([bytes]), `msg-${info.messageId}${mime.startsWith('image/') ? '.jpg' : '.mp4'}`);
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 60000);
       try {

@@ -31,10 +31,17 @@ export async function engineeringReUpload(
   opts.log?.({ level: 'warn', category: 'forward', title: '🛠️ ENGINEERING RE-UPLOAD: Downloading from source', message: `Direct delivery failed. Downloading the media through your session and re-uploading it as a fresh file.` });
   await client.downloadMedia(message, { outputFile: tmpFile });
   try {
+    // Re-upload with the ORIGINAL document attributes so the delivered media
+    // keeps its exact Telegram behaviour: round video notes stay round,
+    // videos stay streamable inline (not file attachments), filenames persist.
+    const originalAttrs = Array.isArray(message?.document?.attributes) ? message.document.attributes : [];
+    const isRoundNote = originalAttrs.some((a: any) => a?.className === 'DocumentAttributeVideo' && a?.roundMessage);
+    const attributes = originalAttrs.length ? originalAttrs : undefined;
     const mediaClassName = String(message?.media?.className || '');
-    const forceDocument = ['MessageMediaDocument', 'MessageMediaAudio', 'MessageMediaVoice'].includes(mediaClassName);
-    const caption = opts.caption ? String(opts.caption).slice(0, 1000) : undefined;
-    const sent = await client.sendFile(targetEntity, { file: tmpFile, caption, forceDocument });
+    const forceDocument = attributes ? undefined : ['MessageMediaDocument', 'MessageMediaAudio', 'MessageMediaVoice'].includes(mediaClassName);
+    // Round video notes don't carry captions in Telegram clients — strip to avoid errors.
+    const caption = isRoundNote ? undefined : opts.caption ? String(opts.caption).slice(0, 1000) : undefined;
+    const sent = await client.sendFile(targetEntity, { file: tmpFile, caption, forceDocument, attributes });
     opts.log?.({ level: 'info', category: 'forward', title: '🛠️ ENGINEERING RE-UPLOAD: Delivered', message: `Media downloaded from the source and re-uploaded as a fresh file.` });
     return { sent, bytes: mediaSize };
   } finally {
