@@ -33,9 +33,11 @@ const botServer = http.createServer((rq, rs) => {
     let payload: any = {};
     if (ct.includes('application/json')) { try { payload = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch {} }
     else if (ct.includes('multipart/form-data')) { const body = Buffer.concat(chunks).toString('latin1'); payload = { multipart: true, hasBytes: Buffer.concat(chunks).length > 1000, caption: /msg caption|#\d+/.test(body), streaming: /supports_streaming/.test(body) }; }
+    let status = 200;
+    if (method === 'sendMessage' && /rate probe/.test(JSON.stringify(payload)) && !botCalls.some((c) => /rate probe/.test(JSON.stringify(c.payload)))) status = 429;
     botCalls.push({ method, payload });
-    rs.writeHead(200, { 'Content-Type': 'application/json' });
-    rs.end(JSON.stringify({ ok: true }));
+    rs.writeHead(status, { 'Content-Type': 'application/json' });
+    rs.end(JSON.stringify(status === 429 ? { ok: false, parameters: { retry_after: 0 } } : { ok: true }));
   });
 });
 await new Promise<void>((r) => botServer.listen(3986, () => r()));
@@ -134,6 +136,12 @@ await runWithTenant('default', async () => {
   const avCalls = botCalls.slice(beforeAV);
   check('GIF animation mirrored via sendAnimation', avCalls.some((c) => c.method === 'sendAnimation' && c.payload.multipart === true), JSON.stringify(avCalls.map((c) => c.method)));
   check('voice note mirrored via sendVoice', avCalls.some((c) => c.method === 'sendVoice' && c.payload.multipart === true), JSON.stringify(avCalls.map((c) => c.method)));
+
+  // ---- 4d. Telegram 429 flood control → retried, never dropped ----
+  mirrorCapturedMessage(engine, mkMsg(5016, '-1005550001', 'rate probe message'), { sourceId: '-1005550001', sourceTitle: 'Restricted Channel' });
+  await sleep(4500);
+  const probeCalls = botCalls.filter((c) => /rate probe/.test(c.payload.text || ''));
+  check('429 flood control retried until delivered', probeCalls.length === 2, JSON.stringify(probeCalls.map((c) => c.payload.text)));
 
   // ---- 5. auto-import path (same shared mirror) ----
   mirrorCapturedMessage(engine, mkMsg(5004, '-1008880004', 'imported post'), { sourceId: '-1008880004', sourceTitle: 'Watched Source', ruleName: 'auto-import' });

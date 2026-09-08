@@ -65,7 +65,7 @@ export const ChannelCrawler: React.FC<{ chats: DiscoveredChat[] }> = ({ chats })
       const res = await fetch('/api/fetcher/mirror', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sourceId: sourceId.trim(), ...(messageId ? { messageId } : { limit: 100 }) }),
+        body: JSON.stringify({ sourceId: sourceId.trim(), ...(messageId ? { messageId } : { limit: 500 }) }),
       });
       const data = await res.json();
       if (!res.ok || !data.success) throw new Error(data.error || 'Mirror failed.');
@@ -202,7 +202,7 @@ export const ChannelCrawler: React.FC<{ chats: DiscoveredChat[] }> = ({ chats })
                   onClick={() => mirrorToBot()}
                   disabled={botBusy !== null}
                   className="flex items-center gap-1.5 rounded-lg border border-sky-700/60 bg-sky-600/20 px-2.5 py-1.5 text-[11px] font-semibold text-sky-300 hover:bg-sky-600/30 disabled:opacity-50"
-                  title="Mirror the newest 100 posts of this channel into your Telegram bot"
+                  title="Mirror the newest 500 posts of this channel into your Telegram bot"
                 >
                   {botBusy === 'bulk' ? <Loader2 className="w-3 h-3 animate-spin" /> : <Bot className="w-3 h-3" />}
                   Mirror history to bot

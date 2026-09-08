@@ -40,19 +40,40 @@ function remember(key: string): boolean {
   return true;
 }
 
+const sleepMs = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Run a Bot API request, honouring Telegram's 429 flood control
+ * (parameters.retry_after) with up to 4 attempts. Never throws.
+ */
+async function botFetch(attempt: () => Promise<Response>): Promise<void> {
+  for (let i = 1; i <= 4; i++) {
+    let res: Response;
+    try {
+      res = await attempt();
+    } catch {
+      if (i < 4) { await sleepMs(1500 * i); continue; }
+      return;
+    }
+    if (res.status !== 429) return;
+    let waitSec = 2;
+    try { const j: any = await res.clone().json(); waitSec = Number(j?.parameters?.retry_after) || Number(res.headers.get('retry-after')) || 2; } catch { waitSec = Number(res.headers.get('retry-after')) || 2; }
+    if (i < 4) await sleepMs(Math.min(waitSec, 30) * 1000 + 250);
+  }
+}
+
 async function botCall(method: string, payload: Record<string, unknown>): Promise<void> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 20000);
-  try {
-    await fetch(`${API_BASE}/bot${BOT_TOKEN}/${method}`, {
+  const send = () => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 20000);
+    return fetch(`${API_BASE}/bot${BOT_TOKEN}/${method}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ chat_id: CHAT_ID, ...payload }),
       signal: controller.signal,
-    });
-  } finally {
-    clearTimeout(timer);
-  }
+    }).finally(() => clearTimeout(timer));
+  };
+  await botFetch(send);
 }
 
 const header = (info: { sourceTitle: string; messageId: number; ruleName?: string }) =>
@@ -113,13 +134,11 @@ async function mirrorNow(engine: any, message: any, info: { sourceId: string; so
       if (method !== 'sendVideoNote') form.append('caption', caption.slice(0, 1024));
       const bytes = fs.readFileSync(tmp);
       form.append(field, new Blob([bytes]), `msg-${info.messageId}${ext}`);
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 60000);
-      try {
-        await fetch(`${API_BASE}/bot${BOT_TOKEN}/${method}`, { method: 'POST', body: form as any, signal: controller.signal });
-      } finally {
-        clearTimeout(timer);
-      }
+      await botFetch(() => {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 60000);
+        return fetch(`${API_BASE}/bot${BOT_TOKEN}/${method}`, { method: 'POST', body: form as any, signal: controller.signal }).finally(() => clearTimeout(timer));
+      });
     } finally {
       try { fs.rmSync(tmp, { force: true }); } catch { /* best effort */ }
     }
