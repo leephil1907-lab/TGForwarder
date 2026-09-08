@@ -104,18 +104,49 @@ async function mirrorNow(engine: any, message: any, info: { sourceId: string; so
   }
 }
 
-/** Fire-and-forget mirror of a captured message. Serialized, deduped, never throws. */
-export function mirrorCapturedMessage(engine: any, message: any, info: { sourceId: string; sourceTitle: string; ruleName?: string }): void {
-  if (!botMirrorConfigured()) return;
+/** Fire-and-forget mirror of a captured message. Serialized, deduped, never throws. Returns true when newly queued. */
+export function mirrorCapturedMessage(engine: any, message: any, info: { sourceId: string; sourceTitle: string; ruleName?: string }): boolean {
+  if (!botMirrorConfigured()) return false;
   try {
     const messageId = Number(message?.id || 0);
-    if (!messageId) return;
+    if (!messageId) return false;
     const key = `${info.sourceId}:${messageId}`;
-    if (!remember(key)) return;
+    if (!remember(key)) return false;
     chain = chain
       .then(() => mirrorNow(engine, message, { ...info, messageId }))
       .catch(() => { /* never break forwarding */ });
+    return true;
   } catch {
-    /* never break forwarding */
+    return false;
   }
+}
+
+/**
+ * History backfill: mirror the newest `limit` posts of a source (paging the
+ * channel history) into the bot. Dedupe makes re-runs safe. Returns the
+ * number of newly queued messages.
+ */
+export async function mirrorHistory(engine: any, sourceId: string, limit = 100): Promise<number> {
+  if (!botMirrorConfigured()) throw Object.assign(new Error('Archive bot is not configured (set ARCHIVE_BOT_TOKEN and ARCHIVE_CHAT_ID).'), { status: 400 });
+  const client = engine?.client;
+  if (!client || typeof client.getMessages !== 'function') throw Object.assign(new Error('Telegram account is not connected.'), { status: 401 });
+  await engine.waitForInitialization?.();
+  const entity = await engine.resolveEntity(sourceId);
+  const title = String(entity?.title || sourceId);
+  let offsetId = 0;
+  let queued = 0;
+  const seen = new Set<number>();
+  while (queued < limit) {
+    const batch: any[] = await client.getMessages(entity, { limit: Math.min(100, limit - queued), offsetId });
+    if (!Array.isArray(batch) || batch.length === 0) break;
+    for (const m of batch) {
+      if (!m?.id || seen.has(Number(m.id))) continue;
+      seen.add(Number(m.id));
+      if (mirrorCapturedMessage(engine, m, { sourceId, sourceTitle: title, ruleName: 'history' })) queued++;
+    }
+    const nextOffset = Number(batch[batch.length - 1]?.id || 0);
+    if (!nextOffset || nextOffset === offsetId) break;
+    offsetId = nextOffset;
+  }
+  return queued;
 }

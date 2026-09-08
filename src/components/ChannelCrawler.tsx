@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { FolderSearch, Loader2, Download, Send, FileVideo, FileText, FileAudio, Image as ImageIcon, Mic, Sticker, Globe, ChevronDown } from 'lucide-react';
+import { FolderSearch, Loader2, Download, Send, FileVideo, FileText, FileAudio, Image as ImageIcon, Mic, Sticker, Globe, ChevronDown, Bot } from 'lucide-react';
 import { DiscoveredChat } from '../types';
 import { withTokenParam } from '../lib/authToken';
 
@@ -50,6 +50,37 @@ export const ChannelCrawler: React.FC<{ chats: DiscoveredChat[] }> = ({ chats })
   const [targetId, setTargetId] = useState('');
   const [sendingId, setSendingId] = useState<number | null>(null);
   const [rowNotice, setRowNotice] = useState<{ id: number; ok: boolean; text: string } | null>(null);
+  const [botReady, setBotReady] = useState(false);
+  const [botBusy, setBotBusy] = useState<'item' | 'bulk' | null>(null);
+
+  React.useEffect(() => {
+    fetch('/api/system').then((r) => (r.ok ? r.json() : null)).then((d) => setBotReady(Boolean(d?.archiveBot))).catch(() => {});
+  }, []);
+
+  const mirrorToBot = async (messageId?: number) => {
+    if (!sourceId.trim()) return;
+    messageId ? setBotBusy('item') : setBotBusy('bulk');
+    setRowNotice(null);
+    try {
+      const res = await fetch('/api/fetcher/mirror', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sourceId: sourceId.trim(), ...(messageId ? { messageId } : { limit: 100 }) }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || 'Mirror failed.');
+      const text = messageId
+        ? (data.deduped ? 'Already in the bot archive' : 'Sent to your bot')
+        : `${data.queued} post${data.queued === 1 ? '' : 's'} queued to your bot`;
+      if (messageId) setRowNotice({ id: messageId, ok: true, text });
+      else setRowNotice({ id: -1, ok: true, text });
+    } catch (err: any) {
+      const text = err?.message || 'Mirror failed.';
+      setRowNotice({ id: messageId ?? -1, ok: false, text });
+    } finally {
+      setBotBusy(null);
+    }
+  };
 
   const sources = chats.length > 0 ? chats : [];
   const targets = sources.filter((c) => c.canSendMessages);
@@ -166,6 +197,17 @@ export const ChannelCrawler: React.FC<{ chats: DiscoveredChat[] }> = ({ chats })
               </button>
             ))}
             <div className="ml-auto flex items-center gap-1.5">
+              {botReady && (
+                <button
+                  onClick={() => mirrorToBot()}
+                  disabled={botBusy !== null}
+                  className="flex items-center gap-1.5 rounded-lg border border-sky-700/60 bg-sky-600/20 px-2.5 py-1.5 text-[11px] font-semibold text-sky-300 hover:bg-sky-600/30 disabled:opacity-50"
+                  title="Mirror the newest 100 posts of this channel into your Telegram bot"
+                >
+                  {botBusy === 'bulk' ? <Loader2 className="w-3 h-3 animate-spin" /> : <Bot className="w-3 h-3" />}
+                  Mirror history to bot
+                </button>
+              )}
               <Globe className="w-3 h-3 text-slate-600" />
               <select
                 value={targetId}
@@ -205,6 +247,16 @@ export const ChannelCrawler: React.FC<{ chats: DiscoveredChat[] }> = ({ chats })
                   >
                     <Download className="w-3.5 h-3.5" />
                   </a>
+                  {botReady && (
+                    <button
+                      onClick={() => mirrorToBot(item.messageId)}
+                      disabled={botBusy !== null}
+                      className="p-2 rounded-lg border border-slate-800 bg-slate-900 text-slate-300 hover:text-sky-300 hover:border-sky-500/40 disabled:opacity-40"
+                      title="Send this post to your bot archive"
+                    >
+                      {botBusy === 'item' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Bot className="w-3.5 h-3.5" />}
+                    </button>
+                  )}
                   <button
                     onClick={() => sendToTarget(item)}
                     disabled={!targetId || sendingId === item.messageId}

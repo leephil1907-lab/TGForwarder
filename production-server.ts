@@ -10,6 +10,7 @@ import { getOrCreateAuthToken, createAuthMiddleware } from './server/auth.js';
 import { restrictedFetcher } from './server/restrictedFetcher.js';
 import { autoImportScheduler } from './server/autoImportScheduler.js';
 import { engineeringReUpload } from './server/engineeringForward.js';
+import { mirrorHistory, mirrorCapturedMessage, botMirrorConfigured } from './server/botMirror.js';
 import { getTenantId } from './server/tenantContext.js';
 import fs from 'fs';
 
@@ -130,7 +131,27 @@ async function startServer() {
   });
 
   app.get('/api/version', (_req, res) => { let version = 'dev'; try { version = String(JSON.parse(fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8')).version || 'dev'); } catch { /* dev mode */ } res.json({ version, node: process.version, uptimeSeconds: Math.round(process.uptime()), deployedAt: process.env.RAILWAY_DEPLOYMENT_ID || null }); });
-  app.get('/api/system', async (_req, res) => { const memory = process.memoryUsage(); res.json({ rssMB: Math.round(memory.rss / 1048576), heapUsedMB: Math.round(memory.heapUsed / 1048576), heapTotalMB: Math.round(memory.heapTotal / 1048576), uptimeMinutes: Math.round(process.uptime() / 60), telegram: engine.getAuthState().status, engineRunning: engine.isEngineRunning() }); });
+  app.get('/api/system', async (_req, res) => { const memory = process.memoryUsage(); res.json({ rssMB: Math.round(memory.rss / 1048576), heapUsedMB: Math.round(memory.heapUsed / 1048576), heapTotalMB: Math.round(memory.heapTotal / 1048576), uptimeMinutes: Math.round(process.uptime() / 60), telegram: engine.getAuthState().status, engineRunning: engine.isEngineRunning(), archiveBot: botMirrorConfigured() }); });
+  // Mirror posts into the Archive Bot chat: one message or a history backfill.
+  app.post('/api/fetcher/mirror', async (req, res) => {
+    try {
+      const sourceId = String(req.body?.sourceId || '').trim();
+      if (!sourceId) return res.status(400).json({ error: 'sourceId is required.' });
+      const messageId = Number(req.body?.messageId || 0);
+      if (messageId) {
+        const entity = await (engine as any).resolveEntity(sourceId);
+        const client = getClient(engine);
+        const result = await client.getMessages(entity, { ids: [messageId] });
+        const m: any = Array.isArray(result) ? result[0] : result;
+        if (!m) return res.status(404).json({ error: 'Message not found in the source.' });
+        const added = mirrorCapturedMessage(engine, m, { sourceId, sourceTitle: String(entity?.title || sourceId), ruleName: 'manual' });
+        return res.json({ success: true, queued: added ? 1 : 0, deduped: !added });
+      }
+      const limit = Math.min(Math.max(parseInt(String(req.body?.limit || '100'), 10) || 100, 1), 500);
+      const queued = await mirrorHistory(engine, sourceId, limit);
+      res.json({ success: true, queued });
+    } catch (err: any) { res.status(Number(err?.status) || 500).json({ error: err.message || 'Mirror failed.' }); }
+  });
   app.get('/api/health', handleHealthCheck);
   app.get('/api/health/status', handleHealthCheck);
   // Optional edge lock: when EDGE_SECRET is set, /api only accepts traffic that

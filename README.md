@@ -92,6 +92,10 @@ media as a file (downloaded through your session — restricted sources work;
 Bot API caps uploads at 50 MB, larger files get a notice). Mirroring is
 independent of rule delivery and never blocks forwarding.
 
+**History too:** in the Channel Media Crawler, "Mirror history to bot"
+backfills the newest 100 posts of the selected source (up to 500), and each
+row has a bot button to send that one post. Re-runs are de-duplicated.
+
 ## Failure Alerts (optional)
 
 Get notified the moment deliveries start failing (deduped per route, max 20/hour):
