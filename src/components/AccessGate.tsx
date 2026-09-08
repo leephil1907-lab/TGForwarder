@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Lock, ArrowRight, User, Ticket, KeyRound } from 'lucide-react';
 import { setStoredToken } from '../lib/authToken';
 
@@ -10,13 +10,22 @@ interface AccessGateProps {
 type Mode = 'token' | 'signin' | 'register';
 
 /**
+ * The administrator entry is deliberately HIDDEN from the public page: it only
+ * appears when the gate is opened with the secret hash `#admin`
+ * (e.g. https://your-app.example/#admin). Regular visitors see just
+ * Sign in / Register and cannot tell that an admin console exists.
+ */
+const isAdminEntry = () => typeof window !== 'undefined' && window.location.hash.toLowerCase() === '#admin';
+
+/**
  * Multi-user access gate:
- *  - "Access token"  → the administrator's master APP_AUTH_TOKEN (full admin).
- *  - "Sign in"       → registered user (username + password).
- *  - "Register"      → activate an admin-issued invite code + choose a password.
+ *  - "Sign in"   → registered user (username + password).
+ *  - "Register"  → activate an admin-issued invite code + choose a password.
+ *  - "Admin"     → only with #admin in the URL; master APP_AUTH_TOKEN sign-in.
  */
 export function AccessGate({ onUnlock, error }: AccessGateProps) {
-  const [mode, setMode] = useState<Mode>('signin');
+  const [adminEntry, setAdminEntry] = useState(isAdminEntry);
+  const [mode, setMode] = useState<Mode>(() => (isAdminEntry() ? 'token' : 'signin'));
   const [value, setValue] = useState('');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -24,6 +33,16 @@ export function AccessGate({ onUnlock, error }: AccessGateProps) {
   const [inviteCode, setInviteCode] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const onHash = () => {
+      const isAdmin = isAdminEntry();
+      setAdminEntry(isAdmin);
+      setMode((current) => (isAdmin ? 'token' : current === 'token' ? 'signin' : current));
+    };
+    window.addEventListener('hashchange', onHash);
+    return () => window.removeEventListener('hashchange', onHash);
+  }, []);
 
   const shownError = localError || error || null;
 
@@ -92,9 +111,11 @@ export function AccessGate({ onUnlock, error }: AccessGateProps) {
           <button type="button" className={tabCls(mode === 'register')} onClick={() => { setMode('register'); setLocalError(null); }}>
             <Ticket size={13} /> Register
           </button>
-          <button type="button" className={tabCls(mode === 'token')} onClick={() => { setMode('token'); setLocalError(null); }}>
-            <KeyRound size={13} /> Admin
-          </button>
+          {adminEntry && (
+            <button type="button" className={tabCls(mode === 'token')} onClick={() => { setMode('token'); setLocalError(null); }}>
+              <KeyRound size={13} /> Admin
+            </button>
+          )}
         </div>
 
         {mode === 'signin' && (
@@ -114,7 +135,7 @@ export function AccessGate({ onUnlock, error }: AccessGateProps) {
         {mode === 'register' && (
           <>
             <p className="text-sm text-slate-400 mb-4">
-              New here? Enter the <span className="text-slate-200">invite code</span> you received from the administrator, then pick a username and password.
+              New here? Enter the <span className="text-slate-200">invite code</span> you received, then pick a username and password.
             </p>
             <input
               type="text" autoFocus value={inviteCode} onChange={(e) => setInviteCode(e.target.value)}
@@ -135,7 +156,7 @@ export function AccessGate({ onUnlock, error }: AccessGateProps) {
           </>
         )}
 
-        {mode === 'token' && (
+        {mode === 'token' && adminEntry && (
           <>
             <p className="text-sm text-slate-400 mb-4">
               Administrator sign-in: enter the server's <code className="text-slate-300">APP_AUTH_TOKEN</code> to manage invites, users, and the operator workspace.

@@ -1,5 +1,5 @@
 import React from 'react';
-import { Play, Pause, Key, RefreshCw, LogOut, ShieldCheck } from 'lucide-react';
+import { Play, Pause, Key, RefreshCw, LogOut, ShieldCheck, Sun, Moon } from 'lucide-react';
 import { AuthState, EngineStats } from '../types';
 
 interface NavbarProps {
@@ -28,6 +28,16 @@ export const Navbar: React.FC<NavbarProps> = ({
   onSignOut,
 }) => {
   const isConnected = authState.status === 'connected' && Boolean(authState.userProfile);
+
+  const [theme, setTheme] = React.useState<'light' | 'dark'>(() =>
+    typeof document !== 'undefined' && document.documentElement.classList.contains('light') ? 'light' : 'dark'
+  );
+  const toggleTheme = () => {
+    const next = theme === 'light' ? 'dark' : 'light';
+    setTheme(next);
+    document.documentElement.classList.toggle('light', next === 'light');
+    try { localStorage.setItem('tgforwarder_theme', next); } catch { /* ignore */ }
+  };
 
   const tabs = [
     {
@@ -81,6 +91,13 @@ export const Navbar: React.FC<NavbarProps> = ({
           </div>
 
           <div className="flex items-center gap-3">
+            <button
+              onClick={toggleTheme}
+              title={theme === 'light' ? 'Switch to dark theme' : 'Switch to light theme'}
+              className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-800 bg-slate-900 text-slate-400 transition-colors hover:border-sky-500/40 hover:text-sky-300"
+            >
+              {theme === 'light' ? <Moon className="h-4 w-4" /> : <Sun className="h-4 w-4" />}
+            </button>
             {identity && (
               <div className="hidden items-center gap-2 rounded-lg border border-slate-800 bg-slate-900 px-2.5 py-1.5 md:flex">
                 <div className="flex h-6 w-6 items-center justify-center rounded-full border border-violet-500/40 bg-violet-600/30 text-[10px] font-semibold text-violet-300">

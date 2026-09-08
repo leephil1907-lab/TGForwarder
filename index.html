@@ -3,7 +3,11 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#020617" />
+    <meta name="theme-color" content="#229ed9" />
+    <script>
+      // Apply the saved theme before first paint to avoid a flash.
+      try { if (localStorage.getItem('tgforwarder_theme') === 'light') document.documentElement.classList.add('light'); } catch (e) {}
+    </script>
     <meta name="application-name" content="TGForwarder Pro" />
     <meta name="description" content="TGForwarder Pro — precise Telegram source-to-target forwarding with channel history, controlled publishing, live monitoring, and duplicate protection." />
     <meta property="og:title" content="TGForwarder Pro — Telegram Forwarding Engine" />

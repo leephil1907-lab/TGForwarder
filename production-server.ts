@@ -122,7 +122,8 @@ async function startServer() {
   app.get('/api/users', requireAdmin, (_req, res) => res.json({ success: true, users: userRegistry.listUsers() }));
   app.put('/api/users/:id', requireAdmin, (req, res) => { const updated = userRegistry.setUserDisabled(decodeURIComponent(req.params.id), Boolean(req.body?.disabled)); if (!updated) return res.status(404).json({ success: false, error: 'User not found.' }); res.json({ success: true, user: updated }); });
   app.get('/api/users/invites', requireAdmin, (_req, res) => res.json({ success: true, invites: userRegistry.listInvites() }));
-  app.post('/api/users/invites', requireAdmin, (req, res) => { const invite = userRegistry.createInvite((req as any).username || 'admin', String(req.body?.label || '')); res.json({ success: true, invite }); });
+  app.post('/api/users/invites', requireAdmin, (req, res) => { const days = Number(req.body?.expiresInDays); const invite = userRegistry.createInvite((req as any).username || 'admin', String(req.body?.label || ''), Number.isFinite(days) && days !== 0 ? days : undefined); res.json({ success: true, invite }); });
+  app.post('/api/users/:id/signout', requireAdmin, (req, res) => { const revoked = userRegistry.revokeUserSessions(decodeURIComponent(req.params.id)); res.json({ success: true, revoked }); });
   app.delete('/api/users/invites/:code', requireAdmin, (req, res) => res.json({ success: userRegistry.deleteInvite(decodeURIComponent(req.params.code).toUpperCase()) }));
   app.post('/api/auth/disconnect', async (_req, res) => { try { await engine.disconnect(); clearEngineLogs(engine); res.json({ success: true, message: 'Disconnected successfully. Session activity was cleared.' }); } catch (err: any) { clearEngineLogs(engine); res.status(500).json({ error: err.message || 'Error disconnecting' }); } });
 

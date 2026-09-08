@@ -1,1 +1,158 @@
 @import "tailwindcss";
+
+
+@import "tailwindcss";
+
+/* ============================================================
+   TGForwarder — Telegram brand palette
+   Remaps the cyan/sky/blue utility classes used across the UI
+   to Telegram's official blues (#2AABEE / #229ED9). Un-layered
+   CSS wins over Tailwind's utility layer, so this re-skins the
+   whole app without touching component files.
+   ============================================================ */
+
+/* solid accents */
+.bg-cyan-400 { background-color: #2aabee; }
+.bg-cyan-500 { background-color: #229ed9; }
+.bg-cyan-600 { background-color: #1b86bf; }
+.bg-sky-400 { background-color: #2aabee; }
+.bg-sky-500 { background-color: #229ed9; }
+.text-cyan-200 { color: #a9dcf6; }
+.text-cyan-300 { color: #7cc9ef; }
+.text-cyan-400 { color: #45b3e6; }
+.text-cyan-500 { color: #2aabee; }
+.text-sky-300 { color: #7cc9ef; }
+.text-sky-400 { color: #45b3e6; }
+.text-blue-400 { color: #45b3e6; }
+.text-cyan-300\/80 { color: rgb(124 201 239 / .8); }
+.text-cyan-400\/80 { color: rgb(69 179 230 / .8); }
+
+/* translucent accent fills */
+.bg-cyan-500\/10 { background-color: rgb(42 171 238 / .1); }
+.bg-cyan-500\/20 { background-color: rgb(42 171 238 / .2); }
+.bg-cyan-600\/20 { background-color: rgb(34 158 217 / .2); }
+.bg-cyan-600\/30 { background-color: rgb(34 158 217 / .3); }
+.bg-sky-500\/10 { background-color: rgb(34 158 217 / .1); }
+.bg-sky-500\/15 { background-color: rgb(34 158 217 / .15); }
+.bg-cyan-900\/60 { background-color: rgb(13 71 103 / .6); }
+.bg-cyan-900\/80 { background-color: rgb(13 71 103 / .8); }
+.bg-cyan-950 { background-color: #082e46; }
+.bg-cyan-950\/20 { background-color: rgb(8 46 70 / .2); }
+.bg-cyan-950\/30 { background-color: rgb(8 46 70 / .3); }
+.bg-cyan-950\/40 { background-color: rgb(8 46 70 / .4); }
+.bg-cyan-950\/60 { background-color: rgb(8 46 70 / .6); }
+.bg-cyan-950\/70 { background-color: rgb(8 46 70 / .7); }
+.bg-cyan-950\/80 { background-color: rgb(8 46 70 / .8); }
+.bg-sky-950\/60 { background-color: rgb(8 46 70 / .6); }
+
+/* accent borders */
+.border-cyan-400 { border-color: #2aabee; }
+.border-cyan-400\/30 { border-color: rgb(42 171 238 / .3); }
+.border-cyan-400\/40 { border-color: rgb(42 171 238 / .4); }
+.border-cyan-500 { border-color: #229ed9; }
+.border-cyan-500\/30 { border-color: rgb(34 158 217 / .3); }
+.border-cyan-500\/40 { border-color: rgb(34 158 217 / .4); }
+.border-cyan-500\/50 { border-color: rgb(34 158 217 / .5); }
+.border-cyan-500\/60 { border-color: rgb(34 158 217 / .6); }
+.border-cyan-600 { border-color: #1b86bf; }
+.border-cyan-700 { border-color: #1b86bf; }
+.border-cyan-700\/70 { border-color: rgb(27 134 191 / .7); }
+.border-cyan-800 { border-color: #12608b; }
+.border-cyan-800\/40 { border-color: rgb(18 96 139 / .4); }
+.border-cyan-800\/60 { border-color: rgb(18 96 139 / .6); }
+.border-cyan-800\/80 { border-color: rgb(18 96 139 / .8); }
+.border-cyan-900 { border-color: #0d4767; }
+.border-cyan-900\/50 { border-color: rgb(13 71 103 / .5); }
+.border-sky-500 { border-color: #229ed9; }
+.border-sky-500\/30 { border-color: rgb(34 158 217 / .3); }
+.border-sky-800\/60 { border-color: rgb(13 71 103 / .6); }
+
+/* gradients */
+.from-cyan-500 { --tw-gradient-from: #2aabee; }
+.from-cyan-600 { --tw-gradient-from: #229ed9; }
+.from-cyan-600\/30 { --tw-gradient-from: rgb(34 158 217 / .3); }
+.to-blue-500 { --tw-gradient-to: #229ed9; }
+.to-blue-600 { --tw-gradient-to: #1b86bf; }
+.to-blue-600\/20 { --tw-gradient-to: rgb(27 134 191 / .2); }
+.to-cyan-600 { --tw-gradient-to: #229ed9; }
+
+/* selection */
+::selection { background-color: rgb(42 171 238 / .25); }
+
+/* ============================================================
+   Light theme — activated by <html class="light"> (theme toggle
+   in the navbar, persisted in localStorage). Flips the neutral
+   slate palette; accent + status colors adapted for contrast.
+   ============================================================ */
+
+html.light .bg-slate-950 { background-color: #eef2f7; }
+html.light .bg-slate-950\/40 { background-color: rgb(238 242 247 / .4); }
+html.light .bg-slate-950\/60 { background-color: rgb(238 242 247 / .6); }
+html.light .bg-slate-950\/80 { background-color: rgb(238 242 247 / .8); }
+html.light .bg-slate-900 { background-color: #ffffff; }
+html.light .bg-slate-900\/40 { background-color: rgb(255 255 255 / .4); }
+html.light .bg-slate-900\/50 { background-color: rgb(255 255 255 / .5); }
+html.light .bg-slate-900\/60 { background-color: rgb(255 255 255 / .6); }
+html.light .bg-slate-900\/80 { background-color: rgb(255 255 255 / .8); }
+html.light .bg-slate-900\/90 { background-color: rgb(255 255 255 / .9); }
+html.light .bg-slate-800 { background-color: #e3eaf1; }
+html.light .bg-slate-800\/60 { background-color: rgb(227 234 241 / .6); }
+html.light .bg-slate-800\/80 { background-color: rgb(227 234 241 / .8); }
+html.light .bg-slate-700 { background-color: #cfdae4; }
+html.light .bg-slate-600 { background-color: #b9c9d6; }
+html.light .from-slate-900 { --tw-gradient-from: #ffffff; }
+html.light .to-slate-950 { --tw-gradient-to: #eef2f7; }
+
+html.light .border-slate-300 { border-color: #c9d4de; }
+html.light .border-slate-600 { border-color: #b3c3d1; }
+html.light .border-slate-700 { border-color: #c3d0dc; }
+html.light .border-slate-800 { border-color: #d5dee8; }
+html.light .border-slate-800\/40 { border-color: rgb(198 210 222 / .4); }
+html.light .border-slate-800\/50 { border-color: rgb(198 210 222 / .5); }
+html.light .border-slate-800\/60 { border-color: rgb(198 210 222 / .6); }
+html.light .border-slate-800\/80 { border-color: rgb(198 210 222 / .8); }
+html.light .border-slate-900 { border-color: #dbe3ec; }
+html.light .divide-slate-800 > :not([hidden]) ~ :not([hidden]) { border-color: #d5dee8; }
+html.light .divide-slate-800\/60 > :not([hidden]) ~ :not([hidden]) { border-color: rgb(198 210 222 / .6); }
+
+html.light .text-slate-100 { color: #10202f; }
+html.light .text-slate-200 { color: #1b2c3d; }
+html.light .text-slate-300 { color: #3a566e; }
+html.light .text-slate-400 { color: #58748d; }
+html.light .text-slate-500 { color: #7189a0; }
+html.light .text-slate-600 { color: #8498ab; }
+html.light .text-slate-700 { color: #97a8b8; }
+html.light .text-slate-950 { color: #0b1622; }
+html.light .text-white { color: #101f2e; }
+
+/* white text stays white on colored (Telegram-blue / emerald) surfaces */
+html.light .text-white.bg-cyan-500,
+html.light .text-white.bg-cyan-600,
+html.light .text-white.bg-emerald-500,
+html.light .text-white.bg-emerald-600,
+html.light .text-white.from-cyan-500,
+html.light .text-white.from-cyan-600,
+html.light .text-white.from-emerald-600,
+html.light .text-white.to-blue-500,
+html.light .text-white.to-blue-600,
+html.light .text-white.to-cyan-600 { color: #ffffff; }
+/* dark button labels flip to white on Telegram-blue buttons */
+html.light .text-slate-950.bg-sky-500,
+html.light .text-slate-950.bg-cyan-500 { color: #ffffff; }
+
+/* status colors: darken for legibility on light surfaces */
+html.light .text-emerald-300 { color: #047857; }
+html.light .text-emerald-400 { color: #059669; }
+html.light .text-emerald-200 { color: #065f46; }
+html.light .text-amber-300 { color: #b45309; }
+html.light .text-amber-400 { color: #d97706; }
+html.light .text-amber-200 { color: #92400e; }
+html.light .text-red-300 { color: #be123c; }
+html.light .text-red-400 { color: #dc2626; }
+html.light .text-red-200 { color: #9f1239; }
+html.light .text-violet-300 { color: #6d28d9; }
+html.light .text-violet-400 { color: #7c3aed; }
+html.light .bg-emerald-500\/10 { background-color: rgb(5 150 105 / .12); }
+html.light .bg-red-500\/10 { background-color: rgb(220 38 38 / .1); }
+
+html.light body { background-color: #eef2f7; }

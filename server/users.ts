@@ -30,6 +30,8 @@ export interface InviteRecord {
   createdBy: string;
   usedBy: string | null;
   createdAt: number;
+  /** Epoch ms after which the invite can no longer be used. null = never expires. */
+  expiresAt?: number | null;
 }
 
 export interface SessionRecord {
@@ -125,10 +127,12 @@ export class UserRegistry {
 
   // ==================== INVITES (admin) ====================
 
-  createInvite(createdBy: string, label = ''): InviteRecord {
+  createInvite(createdBy: string, label = '', expiresInDays?: number): InviteRecord {
     const raw = crypto.randomBytes(9).toString('base64url').replace(/[-_]/g, '').toUpperCase().slice(0, 12);
     const code = `TGF-${raw.slice(0, 6)}-${raw.slice(6, 12) || crypto.randomBytes(3).toString('hex').toUpperCase()}`;
-    const invite: InviteRecord = { code, label: String(label || '').slice(0, 60), createdBy, usedBy: null, createdAt: Date.now() };
+    const days = Number(expiresInDays);
+    const expiresAt = Number.isFinite(days) ? Date.now() + days * 86_400_000 : null;
+    const invite: InviteRecord = { code, label: String(label || '').slice(0, 60), createdBy, usedBy: null, createdAt: Date.now(), expiresAt };
     this.data.invites.push(invite);
     this.data.invites = this.data.invites.slice(-500);
     this.scheduleSave();
@@ -159,6 +163,9 @@ export class UserRegistry {
     const invite = this.data.invites.find((i) => i.code.toUpperCase() === code);
     if (!invite) throw Object.assign(new Error('Invalid invite code. Ask the administrator for a valid invite.'), { status: 403 });
     if (invite.usedBy) throw Object.assign(new Error('This invite has already been used.'), { status: 403 });
+    if (invite.expiresAt && Date.now() > invite.expiresAt) {
+      throw Object.assign(new Error('This invite code has expired. Ask the administrator for a new one.'), { status: 403 });
+    }
 
     const name = String(username || '').trim();
     if (!/^[A-Za-z0-9_-]{3,24}$/.test(name)) {
@@ -222,6 +229,15 @@ export class UserRegistry {
     this.data.sessions = this.data.sessions.filter((s) => s.tokenHash !== hash);
     const removed = this.data.sessions.length !== before;
     if (removed) this.scheduleSave();
+    return removed;
+  }
+
+  /** Admin control: immediately invalidate every session belonging to a user. */
+  revokeUserSessions(userId: string): number {
+    const before = this.data.sessions.length;
+    this.data.sessions = this.data.sessions.filter((s) => s.userId !== userId);
+    const removed = before - this.data.sessions.length;
+    if (removed > 0) this.scheduleSave();
     return removed;
   }
 
