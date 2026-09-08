@@ -44,7 +44,8 @@ export default function App() {
   useEffect(()=>{
     if(!hasToken)return; fetchData(); let es:EventSource|null=null; let timer:ReturnType<typeof setTimeout>|null=null; let mounted=true;
     const connect=()=>{if(!mounted)return; es?.close(); es=new EventSource(withTokenParam('/api/stream')); es.onmessage=(ev)=>{try{if(!ev.data||ev.data.startsWith(':'))return;const d=JSON.parse(ev.data);switch(d.type){case'INIT_SNAPSHOT':d.payload.authState&&setAuthState(d.payload.authState);d.payload.stats&&setStats(d.payload.stats);d.payload.recentLogs&&setLogs(d.payload.recentLogs);break;case'NEW_LOG':setLogs(v=>[...v.slice(-250),d.payload]);break;case'LOGS_CLEARED':setLogs([]);break;case'STATS_UPDATED':setStats(d.payload);break;case'AUTH_STATUS_CHANGED':setAuthState(d.payload);break;case'ENGINE_STATE_CHANGED':setConfig(v=>v?{...v,isEngineRunning:d.payload.isRunning}:v);break;}}catch(e){console.error('SSE parse error',e);}}; es.onerror=()=>{es?.close();es=null;if(mounted){if(timer)clearTimeout(timer);timer=setTimeout(connect,2500);}};};
-    connect(); const vis=()=>document.visibilityState==='visible'&&fetchData(); document.addEventListener('visibilitychange',vis); return()=>{mounted=false;if(timer)clearTimeout(timer);es?.close();document.removeEventListener('visibilitychange',vis);};
+    connect(); // No auto-refresh: the dashboard updates only via the live event stream and manual refresh buttons.
+ return()=>{mounted=false;if(timer)clearTimeout(timer);es?.close();};
   },[fetchData,hasToken]);
 
   const scan=async()=>{setScanning(true);try{const r=await fetch('/api/chats/discover');const d=await r.json();if(!r.ok)throw new Error(d.error);setChats(d.chats||[]);}catch(e:any){alert(`Chat Discovery Error: ${e.message}`);}finally{setScanning(false);}};

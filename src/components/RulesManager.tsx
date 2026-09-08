@@ -48,6 +48,7 @@ export const RulesManager: React.FC<RulesManagerProps> = ({
   onClearQuickSelection
 }) => {
   const [isCreating, setIsCreating] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [editingRuleId, setEditingRuleId] = useState<string | null>(null);
 
   // Form State
@@ -318,17 +319,27 @@ export const RulesManager: React.FC<RulesManagerProps> = ({
           </p>
         </div>
 
-        <button
-          id="btn-create-funnel"
-          onClick={() => {
-            if (isCreating) resetForm();
-            else setIsCreating(true);
-          }}
-          className="px-4 py-2 rounded-xl bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white text-xs font-bold transition-all shadow-md shadow-cyan-950 flex items-center justify-center gap-2 shrink-0"
-        >
-          <Plus className="w-4 h-4" />
-          <span>{isCreating ? 'Close Creator' : 'New Funnel Pipeline'}</span>
-        </button>
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            id="btn-refresh-funnels"
+            onClick={() => { setRefreshing(true); onRefreshRules(); setTimeout(() => setRefreshing(false), 600); }}
+            className="p-2.5 rounded-xl bg-slate-800 border border-slate-700 text-slate-300 hover:text-white hover:border-slate-600 transition-all disabled:opacity-50"
+            title="Refresh funnels & filters"
+          >
+            <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />
+          </button>
+          <button
+            id="btn-create-funnel"
+            onClick={() => {
+              if (isCreating) resetForm();
+              else setIsCreating(true);
+            }}
+            className="px-4 py-2 rounded-xl bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white text-xs font-bold transition-all shadow-md shadow-cyan-950 flex items-center justify-center gap-2"
+          >
+            <Plus className="w-4 h-4" />
+            <span>{isCreating ? 'Close Creator' : 'New Funnel Pipeline'}</span>
+          </button>
+        </div>
       </div>
 
       {/* Rule Creator / Editor Drawer */}
