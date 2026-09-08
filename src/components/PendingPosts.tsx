@@ -1,9 +1,29 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { Edit3, FileText, Image, RefreshCw, Send, Trash2, Video, X, Loader2 } from 'lucide-react';
+import { Edit3, FileText, Image, RefreshCw, Send, Trash2, Video, X, Loader2, Download } from 'lucide-react';
+import { withTokenParam } from '../lib/authToken';
 
-type PendingPost={key:string;sourceId:string;sourceTitle:string;targetId:string;targetTitle:string;messageId:number;text:string;hasMedia:boolean;mediaType:string|null;createdAt:number;mediaUrl?:string|null;mimeType?:string|null;fileName?:string|null;};
+type PendingPost={key:string;sourceId:string;sourceTitle:string;targetId:string;targetTitle:string;messageId:number;text:string;hasMedia:boolean;mediaType:string|null;createdAt:number;mediaUrl?:string|null;mimeType?:string|null;fileName?:string|null;mediaFile?:string|null;mediaFileStatus?:string|null;};
 const mediaLabel=(type:string|null)=>{const v=(type||'media').toLowerCase();if(v.includes('video'))return'Video';if(v.includes('photo')||v.includes('image'))return'Photo';if(v.includes('document'))return'Document';if(v.includes('audio'))return'Audio';if(v.includes('voice'))return'Voice';if(v.includes('animation')||v.includes('gif'))return'Animation';return'Media';};
-const MediaPreview:React.FC<{post:PendingPost}>=({post})=>{if(!post.hasMedia)return null;const label=mediaLabel(post.mediaType);const Icon=label==='Video'?Video:label==='Document'?FileText:Image;return <div className="mt-3 rounded-xl overflow-hidden border border-slate-800 bg-slate-950">{post.mediaUrl&&label==='Video'?<video src={post.mediaUrl} controls preload="metadata" className="w-full max-h-[360px] bg-black"/>:post.mediaUrl&&label==='Photo'?<img src={post.mediaUrl} loading="lazy" alt="Telegram media" className="w-full max-h-[360px] object-contain bg-black"/>:<div className="min-h-[140px] flex items-center justify-center"><div className="text-center text-slate-400"><Icon className="w-9 h-9 mx-auto mb-2 text-cyan-400"/><div className="text-xs font-semibold text-slate-200">{label}</div><div className="text-[10px] mt-1 text-slate-500">Original Telegram media attached to post #{post.messageId}</div></div></div>}</div>};
+const MediaPreview:React.FC<{post:PendingPost}>=({post})=>{
+ if(!post.hasMedia)return null;
+ const label=mediaLabel(post.mediaType);
+ const Icon=label==='Video'?Video:label==='Document'?FileText:Image;
+ const localUrl=post.mediaFile?withTokenParam(`/api/pending/media/${encodeURIComponent(post.key)}`):null;
+ const streamUrl=withTokenParam(`/api/history/media?sourceId=${encodeURIComponent(post.sourceId)}&messageId=${post.messageId}`);
+ const thumbUrl=withTokenParam(`/api/history/media/thumbnail?sourceId=${encodeURIComponent(post.sourceId)}&messageId=${post.messageId}`);
+ const previewSrc=localUrl||streamUrl;
+ const downloadHref=localUrl?`${localUrl}&dl=1`:streamUrl;
+ const downloading=post.mediaFileStatus==='downloading';
+ return <div className="mt-3 rounded-xl overflow-hidden border border-slate-800 bg-slate-950">
+  {label==='Video'?<video src={previewSrc} poster={thumbUrl} controls preload="metadata" className="w-full max-h-[360px] bg-black"/>:
+   label==='Photo'?<img src={previewSrc} loading="lazy" alt="Telegram media" className="w-full max-h-[360px] object-contain bg-black"/>:
+   <div className="min-h-[140px] flex items-center justify-center"><div className="text-center text-slate-400"><Icon className="w-9 h-9 mx-auto mb-2 text-cyan-400"/><div className="text-xs font-semibold text-slate-200">{label}</div><div className="text-[10px] mt-1 text-slate-500">{downloading?'Saving a local copy…':post.mediaFileStatus==='too-large'?'File is larger than the local-copy limit — preview streams from Telegram.':'Original Telegram media attached to post #'+post.messageId}</div></div></div>}
+  <div className="flex items-center justify-between gap-2 px-3 py-2 border-t border-slate-800 bg-slate-900/60">
+   <span className="text-[10px] text-slate-500 truncate">{downloading?'Preparing local copy…':localUrl?'Local copy ready — instant preview & download':'Streaming from Telegram'}{post.fileName?` · ${post.fileName}`:''}</span>
+   {!downloading&&<a href={downloadHref} className="flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-800/60 px-2.5 py-1 text-[11px] font-medium text-slate-300 hover:border-sky-500/40 hover:text-sky-300 shrink-0"><Download size={12}/>Download</a>}
+  </div>
+ </div>;
+};
 const Skeleton=()=> <div className="p-4 animate-pulse"><div className="flex flex-col sm:flex-row gap-4"><div className="flex-1 space-y-3"><div className="h-3 w-56 max-w-full rounded bg-slate-800"/><div className="h-24 rounded-xl bg-slate-800"/><div className="h-4 w-3/4 rounded bg-slate-800"/></div><div className="flex sm:flex-col gap-2"><div className="h-9 w-24 rounded-lg bg-slate-800"/><div className="h-9 w-24 rounded-lg bg-slate-800"/></div></div></div>;
 export const PendingPosts:React.FC=()=>{
  const[posts,setPosts]=useState<PendingPost[]>([]),[loading,setLoading]=useState(false),[editing,setEditing]=useState<PendingPost|null>(null),[text,setText]=useState(''),[preserveFormatting,setPreserveFormatting]=useState(true),[busyKey,setBusyKey]=useState<string|null>(null),[notice,setNotice]=useState<string|null>(null);

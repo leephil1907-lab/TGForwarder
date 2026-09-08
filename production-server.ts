@@ -9,7 +9,7 @@ import { getOrCreateAuthToken, createAuthMiddleware } from './server/auth.js';
 import { restrictedFetcher } from './server/restrictedFetcher.js';
 import { autoImportScheduler } from './server/autoImportScheduler.js';
 import { userRegistry } from './server/users.js';
-import { runWithTenant } from './server/tenantContext.js';
+import { runWithTenant, getTenantId } from './server/tenantContext.js';
 import fs from 'fs';
 
 const clearEngineLogs = (engine: TelegramEngine) => {
@@ -235,6 +235,39 @@ async function startServer() {
   app.get('/api/pending', (_req, res) => { res.json({ success: true, posts: (engine as any).getPendingPosts?.() || [] }); });
   app.post('/api/pending/:key/publish', async (req, res) => { try { const key = decodeURIComponent(req.params.key); const result = await (engine as any).publishPendingPost?.(key, typeof req.body?.text === 'string' ? req.body.text : undefined); if (!result) return res.status(500).json({ error: 'Manual publishing is unavailable.' }); res.json(result); } catch (err: any) { res.status(502).json({ error: err.message || 'Failed to publish pending Telegram post.' }); } });
   app.delete('/api/pending/:key', (req, res) => { const key = decodeURIComponent(req.params.key); const result = (engine as any).discardPendingPost?.(key); res.json(result || { success: false }); });
+  // Locally downloaded media for a staged post (written by the import prefetch).
+  app.get('/api/pending/media/:key', (req, res) => {
+    const key = decodeURIComponent(req.params.key);
+    const record = ((engine as any).getPendingPosts?.() || []).find((p: any) => p.key === key);
+    if (!record || !record.mediaFile) return res.status(404).json({ error: 'No local media copy for this post yet. Use the Telegram-stream preview instead.' });
+    const base = process.env.TG_DATA_DIR || path.join(process.cwd(), '.data');
+    const dir = path.join(base, 'tenants', getTenantId(), 'pending-media');
+    const full = path.join(dir, record.mediaFile);
+    if (!full.startsWith(dir) || !fs.existsSync(full)) return res.status(404).json({ error: 'Local media copy is missing.' });
+    const typeKey = String(record.mediaType || '').toLowerCase().replace(/[^a-z]/g, '');
+    const mime = typeKey.includes('photo') ? 'image/jpeg' : typeKey.includes('video') || typeKey.includes('animation') ? 'video/mp4' : typeKey.includes('voice') ? 'audio/ogg' : typeKey.includes('audio') ? 'audio/mpeg' : 'application/octet-stream';
+    const stat = fs.statSync(full);
+    const download = req.query.dl === '1';
+    const filename = String(record.fileName || `post-${record.messageId}.${record.mediaFile.split('.').pop() || 'bin'}`).replace(/["\r\n]/g, '');
+    res.setHeader('Accept-Ranges', 'bytes');
+    res.setHeader('Cache-Control', 'private, max-age=60');
+    res.setHeader('Content-Disposition', `${download ? 'attachment' : 'inline'}; filename="${filename}"`);
+    const rangeHeader = String(req.headers.range || '');
+    const match = rangeHeader.match(/bytes=(\d+)-(\d*)/);
+    if (match) {
+      const start = parseInt(match[1], 10);
+      const end = match[2] ? Math.min(parseInt(match[2], 10), stat.size - 1) : stat.size - 1;
+      if (start >= stat.size || start > end) { res.status(416).setHeader('Content-Range', `bytes */${stat.size}`); return res.end(); }
+      res.status(206);
+      res.setHeader('Content-Type', mime);
+      res.setHeader('Content-Length', String(end - start + 1));
+      res.setHeader('Content-Range', `bytes ${start}-${end}/${stat.size}`);
+      return fs.createReadStream(full, { start, end }).pipe(res);
+    }
+    res.setHeader('Content-Type', mime);
+    res.setHeader('Content-Length', String(stat.size));
+    return fs.createReadStream(full).pipe(res);
+  });
 
   app.get('/api/history', async (req, res) => {
     try {

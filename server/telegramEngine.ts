@@ -4,6 +4,8 @@ import { NewMessage, NewMessageEvent } from 'telegram/events/index.js';
 import { Api } from 'telegram';
 import { computeCheck } from 'telegram/Password.js';
 import crypto from 'crypto';
+import fs from 'fs';
+import path from 'path';
 import { StorageManager, ForwardingRule, ActivityLog, EngineStats, RateLimitConfig, normalizeChatId } from './storage.js';
 
 export interface TelegramUserProfile {
@@ -1357,15 +1359,16 @@ export class TelegramEngine {
       const targetEntity = await this.resolveEntity(targetId);
       let targetMsgId: number | string = 0;
 
-      if (rule.removeForwardSignature) {
-        // Clean Repost without "Forwarded from" header (Direct MTProto message generation)
-        const sent: any = await this.client!.sendMessage(targetEntity, {
-          message: processedText,
-          file: message.media || undefined,
-          formattingEntities: rule.preserveFormatting ? message.entities : undefined
-        });
-        targetMsgId = sent ? sent.id : 0;
-      } else {
+      try {
+        if (rule.removeForwardSignature) {
+          // Clean Repost without "Forwarded from" header (Direct MTProto message generation)
+          const sent: any = await this.client!.sendMessage(targetEntity, {
+            message: processedText,
+            file: message.media || undefined,
+            formattingEntities: rule.preserveFormatting ? message.entities : undefined
+          });
+          targetMsgId = sent ? sent.id : 0;
+        } else {
         // Native Telegram Forward with auto-fallback for restricted private channels
         try {
           const sent: any = await this.client!.forwardMessages(targetEntity, {
@@ -1373,23 +1376,60 @@ export class TelegramEngine {
             fromPeer: message.chatId
           });
           targetMsgId = sent && Array.isArray(sent) && sent[0] ? sent[0].id : 0;
-        } catch (fwdErr: any) {
-          if (fwdErr.message && (fwdErr.message.includes('FORWARDS_RESTRICTED') || fwdErr.message.includes('RESTRICTED') || fwdErr.message.includes('CHAT_FORWARDS_RESTRICTED'))) {
-            this.log({
-              level: 'warn',
-              category: 'forward',
-              title: '🛡️ RESTRICTED SOURCE: Bypassing with Clean Repost',
-              message: `Source channel has saving restrictions. Automatically relayed via direct repost.`
-            });
-            const sent: any = await this.client!.sendMessage(targetEntity, {
-              message: processedText,
-              file: message.media || undefined,
-              formattingEntities: rule.preserveFormatting ? message.entities : undefined
-            });
-            targetMsgId = sent ? sent.id : 0;
-          } else {
-            throw fwdErr;
+          } catch (fwdErr: any) {
+            if (fwdErr.message && (fwdErr.message.includes('FORWARDS_RESTRICTED') || fwdErr.message.includes('RESTRICTED') || fwdErr.message.includes('CHAT_FORWARDS_RESTRICTED'))) {
+              this.log({
+                level: 'warn',
+                category: 'forward',
+                title: '🛡️ RESTRICTED SOURCE: Bypassing with Clean Repost',
+                message: `Source channel has saving restrictions. Automatically relayed via direct repost.`
+              });
+              const sent: any = await this.client!.sendMessage(targetEntity, {
+                message: processedText,
+                file: message.media || undefined,
+                formattingEntities: rule.preserveFormatting ? message.entities : undefined
+              });
+              targetMsgId = sent ? sent.id : 0;
+            } else {
+              throw fwdErr;
+            }
           }
+        }
+      } catch (sendErr: any) {
+        // ================= ENGINEERING FALLBACK (save-restricted-bot method) =================
+        // Native forward AND direct media re-send both failed (restricted/protected
+        // source, expired file reference, ...). Download the media through this
+        // account's session and re-upload it to the target as a fresh upload.
+        if (!message.media || !this.client || typeof (this.client as any).downloadMedia !== 'function') throw sendErr;
+        const maxBytes = (Number(process.env.TG_REUPLOAD_MAX_MB) || 800) * 1024 * 1024;
+        const mediaSize = Number(message.document?.size ?? message.file?.size ?? 0);
+        if (mediaSize > maxBytes) {
+          this.log({ level: 'warn', category: 'forward', title: '⚠️ RE-UPLOAD SKIPPED', message: `Media is ${(mediaSize / 1048576).toFixed(1)} MB (limit ${Math.round(maxBytes / 1048576)} MB). Raise TG_REUPLOAD_MAX_MB to allow the engineering re-upload.` });
+          throw sendErr;
+        }
+        const tenantRoot = path.join(process.env.TG_DATA_DIR || path.join(process.cwd(), '.data'), 'tenants', String((this as any).__tenantId || 'default'), 'reupload');
+        fs.mkdirSync(tenantRoot, { recursive: true });
+        const tmpFile = path.join(tenantRoot, `msg${message.id}-${Date.now()}.bin`);
+        this.log({
+          level: 'warn',
+          category: 'forward',
+          title: '🛠️ ENGINEERING RE-UPLOAD: Downloading from source',
+          message: `Direct delivery failed (${sendErr.message || 'telegram error'}). Downloading the media through your session and re-uploading it as a fresh file.`,
+          sourceId: chatId, sourceTitle: rule.sourceTitle, targetId, targetTitle, messageSnippet: snippet
+        });
+        await this.client.downloadMedia(message, { outputFile: tmpFile });
+        try {
+          const mediaClassName = String(message.media?.className || '');
+          const forceDocument = ['MessageMediaDocument', 'MessageMediaAudio', 'MessageMediaVoice'].includes(mediaClassName);
+          const sent: any = await this.client.sendFile(targetEntity, {
+            file: tmpFile,
+            caption: processedText ? processedText.slice(0, 1000) : undefined,
+            forceDocument
+          });
+          targetMsgId = sent ? sent.id : 0;
+          this.log({ level: 'info', category: 'forward', title: '🛠️ ENGINEERING RE-UPLOAD: Delivered', message: `Media downloaded from the source and re-uploaded to "${targetTitle}" as message #${targetMsgId}.`, sourceId: chatId, sourceTitle: rule.sourceTitle, targetId, targetTitle, messageSnippet: snippet });
+        } finally {
+          try { fs.rmSync(tmpFile, { force: true }); } catch { /* temp cleanup best-effort */ }
         }
       }
 
