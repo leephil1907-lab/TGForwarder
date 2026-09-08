@@ -27,3 +27,5 @@ jobs:
         run: npx -y tsx fallback.mts
       - name: Ops (alerts/backup) proof
         run: npx -y tsx ops.mts
+      - name: Archive-bot proof
+        run: npx -y tsx botmirror.mts

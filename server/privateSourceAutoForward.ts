@@ -1,6 +1,7 @@
 import { NewMessage, NewMessageEvent } from 'telegram/events/index.js';
 import { engineeringReUpload } from './engineeringForward.js';
 import { notifyDeliveryFailure } from './alerts.js';
+import { mirrorCapturedMessage } from './botMirror.js';
 import crypto from 'crypto';
 import { TelegramEngine } from './telegramEngine.js';
 import { normalizeChatId } from './storage.js';
@@ -60,6 +61,7 @@ export function attachPrivateSourceListener(engine: any): void {
         engine.stats.totalReceived++;
         engine.stats.lastActiveTime = Date.now();
         engine.log({ level: 'info', category: 'forward', title: '🛰️ SOURCE CAPTURED', message: `New message #${message.id} captured from private source "${sourceTitle}"`, sourceId, sourceTitle, messageSnippet: snippet });
+        mirrorCapturedMessage(engine, message, { sourceId, sourceTitle, ruleName: rule.name });
 
         for (let i = 0; i < rule.targetIds.length; i++) {
           const targetId = rule.targetIds[i];

@@ -77,6 +77,21 @@ JSON file containing your Telegram session, rules, mappings, pending posts, watc
 fetch jobs. Restoring a backup replaces the current workspace and restarts the service.
 Keep backups offline — they contain your Telegram session string.
 
+## Telegram Archive Bot (optional)
+
+Want to read captured posts — including media from private/restricted
+channels — right inside Telegram? Create any bot with @BotFather and add:
+
+- `ARCHIVE_BOT_TOKEN` — the bot token
+- `ARCHIVE_CHAT_ID` — your chat with that bot (message it once and get your id,
+  e.g. via @userinfobot), or an archive channel where the bot has post rights
+
+Every post captured from a source (live pipeline, private-source listener,
+auto-import watcher) is then mirrored into that chat: text as a message,
+media as a file (downloaded through your session — restricted sources work;
+Bot API caps uploads at 50 MB, larger files get a notice). Mirroring is
+independent of rule delivery and never blocks forwarding.
+
 ## Failure Alerts (optional)
 
 Get notified the moment deliveries start failing (deduped per route, max 20/hour):

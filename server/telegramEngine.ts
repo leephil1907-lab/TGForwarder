@@ -5,6 +5,7 @@ import { Api } from 'telegram';
 import { computeCheck } from 'telegram/Password.js';
 import { engineeringReUpload } from './engineeringForward.js';
 import { notifyDeliveryFailure } from './alerts.js';
+import { mirrorCapturedMessage } from './botMirror.js';
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
@@ -1073,6 +1074,9 @@ export class TelegramEngine {
 
       const rawText = message.message || message.text || '';
       const chatTitle = event.chat ? (event.chat as any).title || (event.chat as any).firstName || chatId : chatId;
+      // Telegram Archive Bot: mirror the captured post (text + media) into the
+      // operator's bot chat, independent of rule delivery.
+      mirrorCapturedMessage(this, message, { sourceId: chatId, sourceTitle: chatTitle, ruleName: matchingRules.map((r: any) => r.name).join(', ') });
       const snippet = rawText.length > 80 ? rawText.substring(0, 80) + '...' : rawText || '[Media/Attachment]';
 
       // ================= 1. DETECTED =================

@@ -13,6 +13,7 @@
 import fs from 'fs';
 import path from 'path';
 import { TelegramEngine } from './telegramEngine.js';
+import { mirrorCapturedMessage } from './botMirror.js';
 
 export interface AutoImportWatch {
   id: string;
@@ -230,6 +231,12 @@ export class AutoImportScheduler {
       // Oldest first so the review queue reads top-down chronologically.
       messages.sort((a, b) => Number(a.id) - Number(b.id));
       if (messages.length > MAX_PER_RUN) messages = messages.slice(-MAX_PER_RUN);
+
+      // Telegram Archive Bot: mirror each imported post into the operator's bot chat.
+      if (messages.length) {
+        const entityTitle = String(entity?.title || watch.sourceTitle || watch.sourceId);
+        for (const m of messages) mirrorCapturedMessage(this.engine, m, { sourceId: watch.sourceId, sourceTitle: entityTitle, ruleName: 'auto-import' });
+      }
 
       let imported = 0;
       const config = (this.engine as any).storage.getConfig();
