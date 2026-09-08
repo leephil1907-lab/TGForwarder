@@ -87,19 +87,32 @@ async function mirrorNow(engine: any, message: any, info: { sourceId: string; so
       // videos stream inline, round video notes stay round (sendVideoNote),
       // everything else goes as a document.
       const attrs = Array.isArray(message?.document?.attributes) ? message.document.attributes : [];
-      const isRoundNote = attrs.some((a: any) => a?.className === 'DocumentAttributeVideo' && a?.roundMessage);
       const mime = String(message?.document?.mimeType || message?.media?.mimeType || '').toLowerCase();
+      const isRoundNote = attrs.some((a: any) => a?.className === 'DocumentAttributeVideo' && a?.roundMessage);
+      const isAnim = attrs.some((a: any) => a?.className === 'DocumentAttributeAnimated');
+      const isVoice = attrs.some((a: any) => a?.className === 'DocumentAttributeAudio' && a?.voice) || /Voice/.test(className);
+      const isAudio = !isVoice && (attrs.some((a: any) => a?.className === 'DocumentAttributeAudio') || mime.startsWith('audio/'));
       let method = 'sendDocument';
       if (className === 'MessageMediaPhoto' || mime.startsWith('image/')) method = 'sendPhoto';
       else if (isRoundNote) method = 'sendVideoNote';
+      else if (isAnim) method = 'sendAnimation';
       else if (mime.startsWith('video/')) method = 'sendVideo';
-      const field = method === 'sendPhoto' ? 'photo' : method === 'sendVideo' ? 'video' : method === 'sendVideoNote' ? 'video_note' : 'document';
+      else if (isVoice) method = 'sendVoice';
+      else if (isAudio) method = 'sendAudio';
+      const field = method === 'sendPhoto' ? 'photo' : method === 'sendVideo' ? 'video' : method === 'sendVideoNote' ? 'video_note' : method === 'sendAnimation' ? 'animation' : method === 'sendVoice' ? 'voice' : method === 'sendAudio' ? 'audio' : 'document';
+      const origName = String(attrs.find((a: any) => a?.className === 'DocumentAttributeFilename')?.fileName || '');
+      const docExt = origName.match(/\.[a-z0-9]{1,5}$/i)?.[0] || '.bin';
+      const ext = method === 'sendPhoto' ? '.jpg'
+        : method === 'sendVoice' ? '.ogg'
+        : method === 'sendAudio' ? (origName.match(/\.[a-z0-9]{1,5}$/i)?.[0] || '.mp3')
+        : method === 'sendDocument' ? docExt
+        : (mime.includes('webm') ? '.webm' : '.mp4');
       const form = new FormData();
       form.append('chat_id', CHAT_ID);
       if (method === 'sendVideo') form.append('supports_streaming', 'true');
       if (method !== 'sendVideoNote') form.append('caption', caption.slice(0, 1024));
       const bytes = fs.readFileSync(tmp);
-      form.append(field, new Blob([bytes]), `msg-${info.messageId}${mime.startsWith('image/') ? '.jpg' : '.mp4'}`);
+      form.append(field, new Blob([bytes]), `msg-${info.messageId}${ext}`);
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 60000);
       try {
